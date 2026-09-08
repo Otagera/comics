@@ -19,13 +19,20 @@
 import { refreshIndex } from './drive/indexSync.ts'
 import { syncProgress } from './progress.ts'
 import { evict, describeEviction, evictCandidates } from './cache/evict.ts'
-import { fetchComic, cacheSummary } from './cache/fetch.ts'
+import { fetchComic, cacheSummary, reconcileLocal } from './cache/fetch.ts'
 import { listCatalogue } from './catalogue.ts'
 import { humanBytes } from './cache/volume.ts'
 import { closeDb } from './db/index.ts'
 
 function log(msg: string): void {
   process.stdout.write(`${new Date().toISOString()} ${msg}\n`)
+}
+
+function cmdReconcile(): void {
+  const r = reconcileLocal()
+  if (r.adopted || r.dropped) {
+    log(`reconcile: ${r.adopted} adopted from disk, ${r.dropped} no longer present`)
+  }
 }
 
 async function cmdIndex(): Promise<void> {
@@ -102,10 +109,15 @@ async function main(): Promise<number> {
       // Order matters: refresh the catalogue, learn what has been read, then
       // decide what to drop using that fresh reading state.
       await cmdIndex()
+      cmdReconcile()
       await cmdSync()
       cmdEvict(false)
       return 0
+    case 'reconcile':
+      cmdReconcile()
+      return 0
     case 'status':
+      cmdReconcile()
       cmdStatus()
       return 0
     case 'list':
@@ -123,7 +135,7 @@ async function main(): Promise<number> {
     }
     default:
       process.stderr.write(
-        'usage: cli.ts <index|sync|evict|maintenance|status|list|fetch>\n',
+        'usage: cli.ts <index|sync|evict|reconcile|maintenance|status|list|fetch>\n',
       )
       return 2
   }

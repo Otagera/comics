@@ -13,6 +13,7 @@
 
 import { getDb } from './db/index.ts'
 import { listBooks } from './komga/client.ts'
+import { config } from './config.ts'
 
 export type ReadingStatus = 'want' | 'reading' | 'finished' | 'abandoned'
 
@@ -51,7 +52,7 @@ export async function syncProgress(): Promise<ProgressSyncResult> {
   const now = new Date().toISOString()
 
   const byKomgaId = db.prepare('SELECT id FROM comic WHERE komga_id = ?')
-  const byPath = db.prepare('SELECT id FROM comic WHERE local_path IS NOT NULL AND local_path LIKE ?')
+  const byLocalPath = db.prepare('SELECT id FROM comic WHERE local_path = ?')
 
   const upsert = db.prepare(
     `INSERT INTO komga_progress
@@ -76,11 +77,14 @@ export async function syncProgress(): Promise<ProgressSyncResult> {
       let row = byKomgaId.get(b.id) as { id: string } | undefined
 
       if (!row) {
-        // Fall back to the file path. b.url is absolute inside Komga's
-        // container; our local_path is the host path. Compare the tail, which
-        // is the part both agree on.
-        const tail = b.url.replace(/^.*?\/data\//, '')
-        row = byPath.get(`%/${tail}`) as { id: string } | undefined
+        // Fall back to the file path. b.url is absolute as Komga sees it
+        // inside its own container; translating its library root to ours
+        // yields the exact host path, so this is still an identity match and
+        // never a fuzzy title comparison.
+        const hostPath = b.url.startsWith(config.libraryRootInKomga)
+          ? config.libraryRoot + b.url.slice(config.libraryRootInKomga.length)
+          : null
+        row = hostPath ? (byLocalPath.get(hostPath) as { id: string } | undefined) : undefined
         if (row) {
           db.prepare('UPDATE comic SET komga_id = ?, komga_series_id = ? WHERE id = ?').run(
             b.id,

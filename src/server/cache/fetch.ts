@@ -205,6 +205,56 @@ export async function fetchComic(
   }
 }
 
+/**
+ * Reconcile recorded cache state against what is actually on disk.
+ *
+ * Runs before every maintenance pass. It makes the database follow the
+ * filesystem rather than the other way round, which covers three cases the
+ * fetch path alone cannot:
+ *
+ *  - a file put in the library by hand, or by an earlier tool, is adopted
+ *  - a file deleted outside the sidecar stops being reported as cached
+ *  - a lost or rebuilt database recovers its local state from the library
+ *
+ * Only the comic's own expected destination is checked, so this is an exact
+ * path test per row, never a scan-and-guess.
+ */
+export function reconcileLocal(): { adopted: number; dropped: number } {
+  const db = getDb()
+  const rows = db
+    .prepare('SELECT * FROM comic WHERE missing_from_drive = 0')
+    .all() as unknown as ComicRow[]
+
+  let adopted = 0
+  let dropped = 0
+  const now = new Date().toISOString()
+
+  for (const row of rows) {
+    const destPath = join(config.libraryRoot, destinationFor(row))
+    let onDisk = false
+    try {
+      onDisk = statSync(destPath).isFile()
+    } catch {
+      onDisk = false
+    }
+
+    if (onDisk && row.local_state !== 'local') {
+      db.prepare(
+        `UPDATE comic SET local_state = 'local', local_path = ?, fetched_at = COALESCE(fetched_at, ?)
+          WHERE id = ?`,
+      ).run(destPath, now, row.id)
+      adopted++
+    } else if (!onDisk && row.local_state === 'local') {
+      db.prepare(
+        "UPDATE comic SET local_state = 'remote', local_path = NULL WHERE id = ?",
+      ).run(row.id)
+      dropped++
+    }
+  }
+
+  return { adopted, dropped }
+}
+
 /** Volume + library summary for the catalogue's space visualisation. */
 export function cacheSummary() {
   const db = getDb()
