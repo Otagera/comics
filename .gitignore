@@ -16,3 +16,4 @@ todos.json
 .output
 .nitro
 .env
+.data
