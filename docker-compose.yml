@@ -1,0 +1,102 @@
+# Comics stack: Komga (reader/library) + the sidecar (Drive-backed catalogue).
+#
+# One deployment. Both services, both domains, one `docker compose up`.
+# Everything environment-specific -- domains, volume location, credentials --
+# comes from a .env file beside this one; see .env.example.
+#
+# Deliberately not Coolify-managed: Coolify recreates containers with fresh
+# anonymous volumes on redeploy, which previously put comic data on the host's
+# near-full root disk. Every bind mount here is an explicit path under
+# ${VOLUME_ROOT}.
+#
+# Traefik: joins the existing proxy network. The entrypoint names, the
+# `letsencrypt` resolver and the shared `gzip`/`redirect-to-https` middlewares
+# are that proxy's conventions. No strip-prefix middleware -- it produced an
+# empty Host() rule before. DNS for both domains must be unproxied (grey
+# cloud), because the certificate resolver uses an HTTP-01 challenge.
+
+services:
+  komga:
+    image: gotson/komga:${KOMGA_VERSION:-1.26.3}
+    container_name: komga
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - JAVA_TOOL_OPTIONS=-Xmx${KOMGA_HEAP:-512m}
+    volumes:
+      - ${VOLUME_ROOT}/komga-library:/data
+      - ${VOLUME_ROOT}/komga-config:/config
+    ports:
+      - "127.0.0.1:${KOMGA_LOCAL_PORT:-25600}:25600"
+    networks:
+      - proxy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${PROXY_NETWORK:-coolify}
+      - traefik.http.routers.http-komga.entryPoints=http
+      - traefik.http.routers.http-komga.rule=Host(`${KOMGA_DOMAIN}`)
+      - traefik.http.routers.http-komga.middlewares=redirect-to-https
+      - traefik.http.routers.http-komga.service=komga
+      - traefik.http.routers.https-komga.entryPoints=https
+      - traefik.http.routers.https-komga.rule=Host(`${KOMGA_DOMAIN}`)
+      - traefik.http.routers.https-komga.middlewares=gzip
+      - traefik.http.routers.https-komga.service=komga
+      - traefik.http.routers.https-komga.tls=true
+      - traefik.http.routers.https-komga.tls.certresolver=letsencrypt
+      - traefik.http.services.komga.loadbalancer.server.port=25600
+
+  sidecar:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: comics-sidecar:local
+    container_name: comics-sidecar
+    restart: unless-stopped
+    depends_on:
+      - komga
+    environment:
+      - TZ=${TZ:-UTC}
+      # The volume is bind-mounted at the same path it has on the host, so a
+      # path recorded in SQLite is the same string in both places.
+      - CS_VOLUME=${VOLUME_ROOT}
+      - CS_LIBRARY_ROOT=${VOLUME_ROOT}/komga-library
+      - CS_LIBRARY_ROOT_KOMGA=/data
+      - CS_DB_PATH=${VOLUME_ROOT}/sidecar-data/comics.db
+      - CS_STAGING_DIR=${VOLUME_ROOT}/sidecar-data/staging
+      - CS_TMPDIR=${VOLUME_ROOT}/tmp
+      - CS_KOMGA_URL=http://komga:25600
+      - CS_KOMGA_API_KEY=${KOMGA_API_KEY}
+      - CS_KOMGA_LIBRARY_ID=${KOMGA_LIBRARY_ID}
+      - CS_RCLONE_CONFIG=/config/rclone.conf
+      - CS_DRIVE_REMOTE=${DRIVE_REMOTE:-gdrive:Comics}
+      - CS_BUDGET_PCT=${BUDGET_PCT:-80}
+    volumes:
+      - ${VOLUME_ROOT}:${VOLUME_ROOT}
+      - ${RCLONE_CONFIG:-/root/.config/rclone/rclone.conf}:/config/rclone.conf:ro
+    ports:
+      - "127.0.0.1:${SIDECAR_LOCAL_PORT:-3001}:3000"
+    networks:
+      - proxy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${PROXY_NETWORK:-coolify}
+      # SIDECAR_BASICAUTH holds a raw htpasswd line and must be single-quoted
+      # in .env: the hash contains $ signs, which are otherwise eaten by
+      # interpolation (and by any shell that sources the file).
+      - traefik.http.middlewares.comics-auth.basicauth.users=${SIDECAR_BASICAUTH}
+      - traefik.http.routers.http-comics.entryPoints=http
+      - traefik.http.routers.http-comics.rule=Host(`${SIDECAR_DOMAIN}`)
+      - traefik.http.routers.http-comics.middlewares=redirect-to-https
+      - traefik.http.routers.http-comics.service=comics
+      - traefik.http.routers.https-comics.entryPoints=https
+      - traefik.http.routers.https-comics.rule=Host(`${SIDECAR_DOMAIN}`)
+      - traefik.http.routers.https-comics.middlewares=comics-auth,gzip
+      - traefik.http.routers.https-comics.service=comics
+      - traefik.http.routers.https-comics.tls=true
+      - traefik.http.routers.https-comics.tls.certresolver=letsencrypt
+      - traefik.http.services.comics.loadbalancer.server.port=3000
+
+networks:
+  proxy:
+    external: true
+    name: ${PROXY_NETWORK:-coolify}
