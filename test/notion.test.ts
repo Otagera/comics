@@ -57,3 +57,37 @@ test('scores never reach the auto-link threshold on weak overlap', () => {
   assert.ok(sibling < 0.9, `sibling series scored ${sibling}, would auto-link`)
   assert.ok(sibling >= 0.6, 'but it should still be offered for confirmation')
 })
+
+test('the wrong Batman match sits below the auto-link threshold', async () => {
+  const { AUTO_LINK_MIN } = await import('../src/server/notion/sync.ts')
+  // Real data: the tracker holds "Batman: Dark Victory | DC Database | Fandom",
+  // which is not either Batman collection in this archive. A bare prefix match
+  // scores 0.9, so the threshold has to sit above it.
+  const s = matchScore('Batman', 'Batman: Dark Victory | DC Database | Fandom')
+  assert.ok(s < AUTO_LINK_MIN, `scored ${s}, would auto-link the wrong book`)
+  // Genuinely correct prefix matches are still offered for confirmation.
+  assert.ok(matchScore('Green Arrow', 'Green Arrow: 80 Years of the Emerald Archer (Collected)') >= 0.6)
+})
+
+test('the sync never moves a Notion row backwards', async () => {
+  const { statusToWrite } = await import('../src/server/notion/sync.ts')
+  // The regression that wiped a hand-kept read log: Vault has no history for a
+  // title, computes "Not started", and must not assert it over "Done".
+  assert.equal(statusToWrite('Done', 'Not started'), null)
+  assert.equal(statusToWrite('In progress', 'Not started'), null)
+  assert.equal(statusToWrite('Done', 'In progress'), null)
+  assert.equal(statusToWrite('Not started', 'Not started'), null, 'same value is a no-op')
+
+  // Forward progress still lands.
+  assert.equal(statusToWrite('Not started', 'In progress'), 'In progress')
+  assert.equal(statusToWrite('In progress', 'Done'), 'Done')
+  assert.equal(statusToWrite('Not bought', 'Done'), 'Done')
+  assert.equal(statusToWrite(null, 'Not started'), 'Not started', 'a new row takes the value')
+
+  // "Paused" is the user's own option; the sync leaves it unless finishing.
+  assert.equal(statusToWrite('Paused', 'Not started'), null)
+  assert.equal(statusToWrite('Paused', 'Done'), 'Done')
+  // Dropped is a decision; only finishing overrides it.
+  assert.equal(statusToWrite('Dropped', 'Not started'), null)
+  assert.equal(statusToWrite('Dropped', 'Done'), 'Done')
+})

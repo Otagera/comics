@@ -131,7 +131,7 @@ async function main(): Promise<number> {
       if (!props.length) { log('notion: no candidate links'); return 0 }
       log(`notion: ${props.length} candidate link(s)`)
       for (const p of props) {
-        log(`  ${p.score.toFixed(2)}  ${p.comicName}`)
+        log(`  ${p.score.toFixed(2)}${p.contenders > 1 ? ` (${p.contenders} contenders)` : ''}  ${p.comicName}`)
         log(`        -> "${p.notionName}" [${p.notionStatus ?? 'no status'}] ${p.notionPageId}`)
       }
       return 0
@@ -143,8 +143,8 @@ async function main(): Promise<number> {
         return 2
       }
       const props = await proposeLinks()
-      const n = confirmLinks(props.map((p) => ({ comicId: p.comicId, notionPageId: p.notionPageId })))
-      log(`notion: linked ${n} row(s); names left untouched`)
+      const r = confirmLinks(props.map((p) => ({ comicId: p.comicId, notionPageId: p.notionPageId })))
+      log(`notion: linked ${r.linked} row(s), refused ${r.refused} already claimed; names untouched`)
       return 0
     }
     case 'notion-sync': {

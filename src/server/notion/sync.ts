@@ -109,6 +109,47 @@ export interface MatchCandidate {
   notionName: string
   notionStatus: string | null
   score: number
+  /** How many Vault titles wanted this same row. >1 means it is ambiguous. */
+  contenders: number
+}
+
+/** Auto-linking during a sync demands near-certainty; the rest goes to a human. */
+export const AUTO_LINK_MIN = 0.95
+
+/**
+ * How far along the reading journey each status sits.
+ *
+ * Notion is the user's read log and predates Vault, so it frequently knows
+ * things Vault cannot: a title read years ago, or read on paper. Vault must
+ * never move a row *backwards* -- it has no reading history for most rows and
+ * would assert "Not started" over a "Done" the user typed themselves. Only
+ * forward progress is written.
+ */
+const RANK: Record<string, number> = {
+  'Not bought': 0,
+  'Not started': 1,
+  Paused: 2,
+  'In progress': 3,
+  Dropped: 4,
+  Done: 5,
+}
+
+/**
+ * The status to actually write, given what Notion already holds.
+ *
+ * Returns null when Vault has nothing to add, so the row is left untouched
+ * rather than rewritten with the same value.
+ */
+export function statusToWrite(current: string | null, desired: NotionStatus): NotionStatus | null {
+  if (!current) return desired
+  if (current === desired) return null
+  // Dropped is a deliberate decision either way round; only an explicit Vault
+  // abandon sets it, and only the user can clear it.
+  if (current === 'Dropped') return desired === 'Done' ? 'Done' : null
+  const from = RANK[current]
+  const to = RANK[desired]
+  if (from === undefined) return null // an option this sync does not manage
+  return to > from ? desired : null
 }
 
 /**
@@ -192,29 +233,62 @@ export async function proposeLinks(minScore = 0.6): Promise<MatchCandidate[]> {
         notionName: best.row.name,
         notionStatus: best.row.status,
         score: Number(best.score.toFixed(2)),
+        contenders: 1,
       })
     }
   }
-  return out.sort((a, b) => b.score - a.score)
+
+  // A Notion row stands for one tracked thing, so it may be claimed by at most
+  // one Vault title. Without this, several volumes of the same series all
+  // propose the one row and, once linked, take turns overwriting its status.
+  // The best-scoring claimant keeps it; the rest are dropped and will either
+  // be matched to something else or get their own row.
+  const byPage = new Map<string, MatchCandidate[]>()
+  for (const c of out) {
+    const list = byPage.get(c.notionPageId) ?? []
+    list.push(c)
+    byPage.set(c.notionPageId, list)
+  }
+
+  const resolved: MatchCandidate[] = []
+  for (const [, list] of byPage) {
+    list.sort((a, b) => b.score - a.score)
+    const winner = list[0]
+    winner.contenders = list.length
+    resolved.push(winner)
+  }
+  return resolved.sort((a, b) => b.score - a.score || a.comicName.localeCompare(b.comicName))
 }
 
 /** Store confirmed links. Never renames the Notion row. */
-export function confirmLinks(pairs: Array<{ comicId: string; notionPageId: string }>): number {
+export function confirmLinks(
+  pairs: Array<{ comicId: string; notionPageId: string }>,
+): { linked: number; refused: number } {
   const db = getDb()
   const stmt = db.prepare('UPDATE comic SET notion_page_id = ? WHERE id = ?')
-  let n = 0
+  const taken = db.prepare(
+    'SELECT id FROM comic WHERE notion_page_id = ? AND id <> ?',
+  )
+  let linked = 0
+  let refused = 0
   db.exec('BEGIN')
   try {
     for (const p of pairs) {
+      // A page already spoken for is refused rather than stolen: two comics
+      // sharing a row means whichever syncs last decides its status.
+      if (taken.get(p.notionPageId, p.comicId)) {
+        refused++
+        continue
+      }
       stmt.run(p.notionPageId, p.comicId)
-      n++
+      linked++
     }
     db.exec('COMMIT')
   } catch (err) {
     db.exec('ROLLBACK')
     throw err
   }
-  return n
+  return { linked, refused }
 }
 
 export interface SyncResult {
@@ -278,7 +352,7 @@ export async function syncToNotion(opts: { autoLink?: boolean } = {}): Promise<S
       const cand = rows
         .filter((r) => isAdoptable(r) && !claimed.has(r.id))
         .map((r) => ({ r, s: matchScore(w.series ?? name, r.name) }))
-        .filter((x) => x.s >= 0.9)
+        .filter((x) => x.s >= AUTO_LINK_MIN)
         .sort((a, b) => b.s - a.s)[0]
       if (cand) {
         pageId = cand.r.id
@@ -297,8 +371,14 @@ export async function syncToNotion(opts: { autoLink?: boolean } = {}): Promise<S
       claimed.add(pageId)
       result.created++
     } else if (w.status === 'wanted') {
-      await updateRow(cfg, schema, pageId, { type: NOTION_TYPE, status: 'Not bought' })
-      result.updated++
+      const cur = byId.get(pageId)?.status ?? null
+      const next = statusToWrite(cur, 'Not bought')
+      if (next) {
+        await updateRow(cfg, schema, pageId, { type: NOTION_TYPE, status: next })
+        result.updated++
+      } else {
+        result.skipped++
+      }
     }
 
     db.prepare('UPDATE wishlist SET notion_page_id = ? WHERE id = ?').run(pageId, w.id)
@@ -322,7 +402,7 @@ export async function syncToNotion(opts: { autoLink?: boolean } = {}): Promise<S
         .filter((r) => isAdoptable(r) && !claimed.has(r.id))
         .filter((r) => !rejected.has(`${c.id}:${r.id}`))
         .map((r) => ({ r, s: matchScore(c.series ?? '', r.name) }))
-        .filter((x) => x.s >= 0.9)
+        .filter((x) => x.s >= AUTO_LINK_MIN)
         .sort((a, b) => b.s - a.s)[0]
       if (cand) {
         pageId = cand.r.id
@@ -356,7 +436,19 @@ export async function syncToNotion(opts: { autoLink?: boolean } = {}): Promise<S
     }
 
     // Name is deliberately absent: a rename made in Notion must survive.
-    await updateRow(cfg, schema, pageId, { type: NOTION_TYPE, status, completedDate })
+    const next = statusToWrite(byId.get(pageId)?.status ?? null, status)
+    if (!next) {
+      // Notion is already at or ahead of what Vault knows. Leave it alone --
+      // overwriting here is what wiped hand-kept "Done" rows once already.
+      result.skipped++
+      continue
+    }
+    await updateRow(cfg, schema, pageId, {
+      type: NOTION_TYPE,
+      status: next,
+      // Only stamp a completion date alongside an actual completion.
+      ...(next === 'Done' ? { completedDate } : {}),
+    })
     result.updated++
   }
 

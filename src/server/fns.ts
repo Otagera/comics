@@ -175,7 +175,7 @@ export const getNotionLinkProposals = createServerFn({ method: 'GET' }).handler(
 
 export const applyNotionLinks = createServerFn({ method: 'POST' })
   .validator((pairs: Array<{ comicId: string; notionPageId: string }>) => pairs)
-  .handler(({ data }) => ({ linked: confirmLinks(data) }))
+  .handler(({ data }) => confirmLinks(data))
 
 export const rejectNotionLink = createServerFn({ method: 'POST' })
   .validator((d: { comicId: string; notionPageId: string }) => d)
