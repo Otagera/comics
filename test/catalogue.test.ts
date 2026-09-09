@@ -2,7 +2,7 @@ import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 
 // config reads the environment at import time, so it must be set before any
 // module under test is loaded.
@@ -18,6 +18,7 @@ const { getDb, closeDb } = await import('../src/server/db/index.ts')
 const { listCatalogue, listSeriesGroups, getComic } = await import('../src/server/catalogue.ts')
 const { setReadingStatus } = await import('../src/server/progress.ts')
 const { evictCandidates } = await import('../src/server/cache/evict.ts')
+const { reconcileLocal, destinationFor } = await import('../src/server/cache/fetch.ts')
 const { addWish, listWishes } = await import('../src/server/wishlist.ts')
 
 const fixture = JSON.parse(
@@ -158,4 +159,33 @@ test('a wish flips to available when a matching comic appears', () => {
   const w = listWishes().find((x) => x.id === id)!
   assert.equal(w.status, 'available')
   assert.ok(w.matched_comic_id, 'and is linked to the comic it matched')
+})
+
+test('reconcile repairs a stale local_path even when state is already local', () => {
+  // Regression: moving the volume's in-container mount point left local_path
+  // pointing at a path that no longer exists. Eviction deletes by that path,
+  // and rmSync(force) succeeds silently on a missing path, so eviction would
+  // report freeing bytes it never freed.
+  const db = getDb()
+  const c = listCatalogue().find((x) => x.fileName.startsWith('Wolverine'))!
+
+  const dest = join(process.env.CS_LIBRARY_ROOT!, destinationFor({
+    drive_path: c.drivePath,
+    drive_bucket: c.driveBucket,
+    file_name: c.fileName,
+  } as never))
+  mkdirSync(dirname(dest), { recursive: true })
+  writeFileSync(dest, 'x')
+
+  db.prepare(
+    "UPDATE comic SET local_state = 'local', local_path = '/old/mount/does-not-exist.cbr' WHERE id = ?",
+  ).run(c.id)
+
+  const r = reconcileLocal()
+  assert.ok(r.adopted >= 1, 'stale path should be repaired')
+  const after = getComic(c.id)!
+  assert.equal(after.localState, 'local')
+
+  const path = db.prepare('SELECT local_path FROM comic WHERE id = ?').get(c.id) as { local_path: string }
+  assert.equal(path.local_path, dest, 'local_path must point at the real file')
 })

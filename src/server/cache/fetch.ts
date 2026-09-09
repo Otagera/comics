@@ -238,7 +238,12 @@ export function reconcileLocal(): { adopted: number; dropped: number } {
       onDisk = false
     }
 
-    if (onDisk && row.local_state !== 'local') {
+    if (onDisk && (row.local_state !== 'local' || row.local_path !== destPath)) {
+      // The path is corrected even when the state is already 'local'. A stale
+      // local_path is not cosmetic: eviction deletes by that path, and
+      // rmSync(..., {force:true}) succeeds silently on a path that does not
+      // exist -- so eviction would report freeing bytes it never freed and
+      // leave the file on disk while the volume filled.
       db.prepare(
         `UPDATE comic SET local_state = 'local', local_path = ?, fetched_at = COALESCE(fetched_at, ?)
           WHERE id = ?`,

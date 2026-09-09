@@ -25,9 +25,12 @@ services:
       - JAVA_TOOL_OPTIONS=-Xmx${KOMGA_HEAP:-512m}
     volumes:
       - ${VOLUME_ROOT}/komga-library:/data
+      # The image declares VOLUME /config. This bind overrides it -- without
+      # it Docker makes a fresh anonymous volume on the root disk at every
+      # redeploy, which is how a previous stack filled that disk.
       - ${VOLUME_ROOT}/komga-config:/config
     ports:
-      - "127.0.0.1:${KOMGA_LOCAL_PORT:-25600}:25600"
+      - "127.0.0.1:${KOMGA_LOCAL_PORT}:25600"
     networks:
       - proxy
     labels:
@@ -60,14 +63,16 @@ services:
       - komga
     environment:
       - TZ=${TZ:-UTC}
-      # The volume is bind-mounted at the same path it has on the host, so a
-      # path recorded in SQLite is the same string in both places.
-      - CS_VOLUME=${VOLUME_ROOT}
-      - CS_LIBRARY_ROOT=${VOLUME_ROOT}/komga-library
+      # The volume mounts at a fixed in-container path. It used to mount at
+      # its own host path so SQLite paths read identically inside and out,
+      # but that put a ${...} on the right-hand side of a volume, which
+      # parsers that validate before interpolating reject.
+      - CS_VOLUME=/vault
+      - CS_LIBRARY_ROOT=/vault/komga-library
       - CS_LIBRARY_ROOT_KOMGA=/data
-      - CS_DB_PATH=${VOLUME_ROOT}/sidecar-data/comics.db
-      - CS_STAGING_DIR=${VOLUME_ROOT}/sidecar-data/staging
-      - CS_TMPDIR=${VOLUME_ROOT}/tmp
+      - CS_DB_PATH=/vault/sidecar-data/comics.db
+      - CS_STAGING_DIR=/vault/sidecar-data/staging
+      - CS_TMPDIR=/vault/tmp
       - CS_KOMGA_URL=http://komga:25600
       - CS_KOMGA_API_KEY=${KOMGA_API_KEY}
       - CS_KOMGA_LIBRARY_ID=${KOMGA_LIBRARY_ID}
@@ -75,13 +80,14 @@ services:
       - CS_DRIVE_REMOTE=${DRIVE_REMOTE:-gdrive:Comics}
       - CS_BUDGET_PCT=${BUDGET_PCT:-80}
     volumes:
-      - ${VOLUME_ROOT}:${VOLUME_ROOT}
-      - ${RCLONE_CONFIG:-/root/.config/rclone/rclone.conf}:/config/rclone.conf:ro
+      - ${VOLUME_ROOT}:/vault
+      - ${RCLONE_CONFIG}:/config/rclone.conf:ro
     ports:
-      - "127.0.0.1:${SIDECAR_LOCAL_PORT:-3001}:3000"
+      - "127.0.0.1:${SIDECAR_LOCAL_PORT}:3000"
     networks:
       - proxy
     labels:
+      - vault.role=sidecar
       - traefik.enable=true
       - traefik.docker.network=${PROXY_NETWORK:-coolify}
       # SIDECAR_BASICAUTH holds a raw htpasswd line and must be single-quoted

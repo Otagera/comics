@@ -186,11 +186,16 @@ export function evict(
   for (const c of chosen) {
     try {
       // Trust the filesystem for the real size: the indexed size is Drive's.
-      let realSize = c.size_bytes
+      // If the file is not there, count zero bytes freed rather than the
+      // indexed size -- rmSync(force) succeeds silently on a missing path, so
+      // crediting Drive's size here would report space that was never
+      // reclaimed and let the volume fill while eviction looked healthy.
+      let realSize = 0
       try {
         realSize = statSync(c.local_path).size
       } catch {
-        // Already gone; still reconcile the row below.
+        // Already gone, or local_path is stale. The row is still reconciled
+        // below so the catalogue stops claiming the comic is cached.
       }
       rmSync(c.local_path, { force: true })
       db.prepare(
