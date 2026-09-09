@@ -24,37 +24,48 @@ Cloudflare): the certificate resolver uses an HTTP-01 challenge.
 
 ### Continuous deployment
 
-Push to `main` and GitHub Actions does it: run tests, build the image, push it
-to GHCR, then SSH to the host to pull and restart the stack. The host never
-builds -- its root disk has no room for a layer cache, so CI carries that cost
-and the host only pulls a finished image.
-
-**This workflow is the only thing that deploys these services.** Routing lives
-in the Traefik labels in `docker-compose.yml`. If another orchestrator also
-deployed them it would add its own labels beside ours, and its router would
-carry no basic-auth middleware -- the sidecar would serve unauthenticated on a
-router that looks perfectly healthy. The deploy therefore asserts, after every
-release, that exactly one container claims the domain and that the domain
-returns 401 without credentials.
-
-Each deploy pins `SIDECAR_IMAGE` in the host's `.env` to the commit's image
-tag, so the running container is always traceable to a commit and a rollback
-is one `SIDECAR_IMAGE=ghcr.io/<owner>/comics-sidecar:<sha>` away.
+Coolify owns the deployment. Push to `main` and GitHub Actions runs the tests,
+builds the sidecar image, pushes it to GHCR, then calls Coolify's deploy
+webhook. Coolify pulls the new image, restarts the stack, and keeps the logs.
+CI never touches the host directly -- if it deployed as well, the two would
+fight over the same containers.
 
 Repository secrets:
 
 | secret | value |
 | --- | --- |
-| `DEPLOY_HOST` | host address |
-| `DEPLOY_USER` | ssh user |
-| `DEPLOY_PATH` | deploy directory, e.g. `/mnt/HC_Volume_106816620/comics-stack` |
-| `DEPLOY_SSH_KEY` | private half of a key in the host's `authorized_keys` |
-| `DEPLOY_KNOWN_HOSTS` | optional; pins the host key instead of trust-on-first-use |
+| `COOLIFY_WEBHOOK_URL` | the resource's deploy webhook (Coolify -> resource -> Webhooks) |
+| `COOLIFY_TOKEN` | a Coolify API token (Keys & Tokens -> API tokens) |
 
-Only `docker-compose.yml` is copied to the host. `.env` and `logs/` live there
-and are never overwritten; the application itself ships inside the image.
+One-time setup in Coolify:
 
-Deploying by hand still works -- sync the repo and run `up -d --build`.
+1. New Resource -> **Docker Compose**, pointed at this repository.
+2. Environment variables: everything in `.env.example`. Set
+   `SIDECAR_IMAGE=ghcr.io/<owner>/comics-sidecar:latest`.
+3. Leave every **domain field empty**. Routing comes from the Traefik labels in
+   `docker-compose.yml`, because the sidecar's basic-auth middleware has to sit
+   on the same router that serves it. A domain set in Coolify makes Coolify
+   generate a second router for the same host, and the one Traefik picks may
+   carry no auth at all -- the site would serve wide open and look healthy.
+4. If the GHCR package is private, add registry credentials so Coolify can
+   pull; making the package public is simpler for a public repo.
+
+Rolling back: point `SIDECAR_IMAGE` at a commit tag
+(`ghcr.io/<owner>/comics-sidecar:<sha>`) and redeploy.
+
+**Verify after the first Coolify deploy**, because `$` in an environment
+variable is the one thing that reliably breaks here -- the basic-auth hash
+contains `$apr1$...`, and a layer that interpolates it silently produces a
+hash that authenticates nobody:
+
+```sh
+# the applied label must show single dollars, matching the htpasswd line
+docker inspect "$(docker ps -q --filter label=vault.role=sidecar)" \
+  --format '{{index .Config.Labels "traefik.http.middlewares.comics-auth.basicauth.users"}}'
+
+# and the domain must actually challenge
+curl -s -o /dev/null -w '%{http_code}\n' https://comics.otagera.xyz/   # want 401
+```
 
 ## Maintenance
 

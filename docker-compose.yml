@@ -4,21 +4,24 @@
 # Everything environment-specific -- domains, volume location, credentials --
 # comes from a .env file beside this one; see .env.example.
 #
-# Deliberately not Coolify-managed: Coolify recreates containers with fresh
-# anonymous volumes on redeploy, which previously put comic data on the host's
-# near-full root disk. Every bind mount here is an explicit path under
-# ${VOLUME_ROOT}.
+# Deployed by Coolify (Docker Compose resource); CI builds the sidecar image
+# and asks Coolify to redeploy. Coolify names the containers, so nothing here
+# sets container_name -- find a service by its `vault.role` label instead.
 #
-# Traefik: joins the existing proxy network. The entrypoint names, the
-# `letsencrypt` resolver and the shared `gzip`/`redirect-to-https` middlewares
-# are that proxy's conventions. No strip-prefix middleware -- it produced an
-# empty Host() rule before. DNS for both domains must be unproxied (grey
-# cloud), because the certificate resolver uses an HTTP-01 challenge.
+# Every bind mount is an explicit path under ${VOLUME_ROOT}. That matters:
+# images that declare their own VOLUME get a fresh anonymous volume on the
+# host's near-full root disk at every redeploy unless a bind overrides it.
+#
+# Traefik routing is declared here rather than through Coolify's domain field,
+# because the sidecar's basic-auth middleware has to be attached to the same
+# router that serves it. Leave the domain fields in Coolify empty: if Coolify
+# also generates routers, two match the same Host() and the one it picks may
+# carry no auth. DNS for both domains must be unproxied (grey cloud), because
+# the certificate resolver uses an HTTP-01 challenge.
 
 services:
   komga:
     image: gotson/komga:${KOMGA_VERSION:-1.26.3}
-    container_name: komga
     restart: unless-stopped
     environment:
       - TZ=${TZ:-UTC}
@@ -34,6 +37,7 @@ services:
     networks:
       - proxy
     labels:
+      - vault.role=komga
       - traefik.enable=true
       - traefik.docker.network=${PROXY_NETWORK:-coolify}
       - traefik.http.routers.http-komga.entryPoints=http
@@ -57,7 +61,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: comics-sidecar
     restart: unless-stopped
     depends_on:
       - komga

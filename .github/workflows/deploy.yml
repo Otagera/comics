@@ -1,18 +1,16 @@
 name: Build & Deploy
 
-# Push to main (or run manually) builds the sidecar image, publishes it to
-# GHCR, and deploys the whole stack on lumina-1.
+# Push to main (or run manually): test, build the sidecar image, publish it to
+# GHCR, then ask Coolify to redeploy.
 #
-# This workflow is the only thing that deploys these services. Nothing else
-# should manage them: an orchestrator that also deploys them would write its
-# own Traefik labels beside ours, and its router would carry no basic-auth
-# middleware -- the sidecar would quietly serve unauthenticated on a router
-# that looks fine. The smoke test below asserts auth is still enforced, so
-# that failure is loud rather than silent.
+# Coolify owns the deployment. It runs the stack, restarts it, and keeps the
+# logs; CI only produces the image and pulls the trigger. Nothing here SSHes
+# into the host -- if this workflow deployed directly it would fight Coolify
+# over the same containers.
 #
-# The host never builds. It used to, and the layer cache repeatedly filled a
-# root disk that sits around 90% -- roughly 600 MB reclaimed per prune. CI has
-# the disk and the cache, so the host only ever pulls a finished image.
+# The host still never builds: the layer cache repeatedly filled a root disk
+# sitting above 90%. CI has the disk and the cache; Coolify pulls a finished
+# image.
 on:
   push:
     branches: [main]
@@ -28,8 +26,7 @@ on:
 
 concurrency:
   # A newer push supersedes an in-flight deploy, but never interrupt one
-  # half-way: cancelling between `pull` and `up` would leave the host on a
-  # stale image.
+  # half-way: Coolify is mid-restart and cancelling leaves it half-applied.
   group: deploy-${{ github.ref }}
   cancel-in-progress: false
 
@@ -58,21 +55,15 @@ jobs:
 
   build:
     needs: [test]
-    # `always()` so a manual skip_tests run still builds; the guard below keeps
-    # a genuine test failure from shipping.
+    # `always()` so a manual skip_tests run still builds; the guard keeps a
+    # genuine test failure from shipping.
     if: always() && !cancelled() && (needs.test.result == 'success' || github.event.inputs.skip_tests == 'true')
     runs-on: ubuntu-latest
-    outputs:
-      image: ${{ steps.meta.outputs.image }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve image name
-        id: meta
-        run: |
-          owner="${GITHUB_REPOSITORY_OWNER,,}"
-          echo "owner=$owner" >> "$GITHUB_OUTPUT"
-          echo "image=ghcr.io/$owner/${IMAGE_NAME}:latest" >> "$GITHUB_OUTPUT"
+      - name: Lowercase owner
+        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -86,11 +77,11 @@ jobs:
         with:
           context: .
           push: true
-          # Tagged with the commit too, so a bad deploy can be rolled back by
-          # pointing SIDECAR_IMAGE at the previous sha.
+          # Coolify pulls :latest on redeploy. The sha tag is the rollback
+          # handle: point SIDECAR_IMAGE at it in Coolify and redeploy.
           tags: |
-            ghcr.io/${{ steps.meta.outputs.owner }}/${{ env.IMAGE_NAME }}:latest
-            ghcr.io/${{ steps.meta.outputs.owner }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ghcr.io/${{ env.OWNER }}/${{ env.IMAGE_NAME }}:latest
+            ghcr.io/${{ env.OWNER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
           cache-from: type=gha,scope=sidecar
           cache-to: type=gha,scope=sidecar,mode=max
 
@@ -100,125 +91,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Open SSH to lumina-1
-        env:
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+      - name: Trigger Coolify redeploy
         run: |
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_deploy
-          chmod 600 ~/.ssh/id_deploy
-          if [ -n "$DEPLOY_KNOWN_HOSTS" ]; then
-            printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          else
-            # Trust-on-first-use. Set DEPLOY_KNOWN_HOSTS to pin the host key.
-            ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
-          fi
-          chmod 600 ~/.ssh/known_hosts
-
-      - name: Ship compose file
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-        run: |
-          # Only the compose file travels. .env and logs/ live on the host and
-          # are never touched; the application itself is inside the image.
-          scp -i ~/.ssh/id_deploy docker-compose.yml \
-            "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/docker-compose.yml"
-
-      - name: Pull and restart
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-          IMAGE: ${{ needs.build.outputs.image }}
-          SHA_IMAGE: ghcr.io/${{ github.repository_owner }}/comics-sidecar:${{ github.sha }}
-          GHCR_USER: ${{ github.actor }}
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          ssh -i ~/.ssh/id_deploy "$DEPLOY_USER@$DEPLOY_HOST" \
-            IMAGE="$SHA_IMAGE" DEPLOY_PATH="$DEPLOY_PATH" \
-            GHCR_USER="$GHCR_USER" GHCR_TOKEN="$GHCR_TOKEN" 'bash -seu' <<'REMOTE'
-          cd "$DEPLOY_PATH"
-
-          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
-
-          # Pin to the commit image rather than :latest so the running
-          # container is always traceable to a commit.
-          if grep -q '^SIDECAR_IMAGE=' .env; then
-            sed -i "s|^SIDECAR_IMAGE=.*|SIDECAR_IMAGE=$IMAGE|" .env
-          else
-            printf '\nSIDECAR_IMAGE=%s\n' "$IMAGE" >> .env
-          fi
-
-          # The whole stack, not just the sidecar: this workflow owns the
-          # deployment, so a compose change to any service has to land too.
-          docker compose pull
-          # --no-build: the host must never build. If an image is missing,
-          # fail loudly here instead of quietly compiling on a full disk.
-          docker compose up -d --no-build --remove-orphans
-
-          docker logout ghcr.io >/dev/null 2>&1 || true
-          # Keep the root disk from creeping back up.
-          docker image prune -f >/dev/null
-          df -h / | tail -1
-          REMOTE
-
-      - name: Smoke test
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-        run: |
-          ssh -i ~/.ssh/id_deploy "$DEPLOY_USER@$DEPLOY_HOST" \
-            DEPLOY_PATH="$DEPLOY_PATH" 'bash -seu' <<'REMOTE'
-          cd "$DEPLOY_PATH"
-          port="$(grep -m1 '^SIDECAR_LOCAL_PORT=' .env | cut -d= -f2- || true)"
-          port="${port:-3001}"
-          domain="$(grep -m1 '^SIDECAR_DOMAIN=' .env | cut -d= -f2- || true)"
-
-          # 1. the app is up
-          ok=""
-          for i in $(seq 1 60); do
-            code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/" || true)"
-            if [ "$code" = "200" ]; then ok=1; echo "sidecar healthy after ${i}s"; break; fi
-            sleep 1
-          done
-          if [ -z "$ok" ]; then
-            echo "sidecar did not return 200 within 60s" >&2
-            docker logs --tail 40 "$(docker ps -q --filter label=vault.role=sidecar | head -1)" >&2
-            exit 1
-          fi
-
-          # 2. exactly one router pair claims the domain. Two means something
-          #    else is also publishing this service.
-          claims="$(for c in $(docker ps -q); do
-              docker inspect "$c" --format '{{json .Config.Labels}}' \
-                | tr ',' '\n' | grep -qF "Host(\`$domain\`)" && docker inspect "$c" --format '{{.Name}}'
-            done | wc -l | tr -d ' ')"
-          if [ "$claims" != "1" ]; then
-            echo "expected exactly 1 container claiming $domain, found $claims" >&2
-            exit 1
-          fi
-
-          # 3. auth is actually enforced through the proxy. This is the guard
-          #    that catches a competing router with no auth middleware.
-          unauth="$(curl -sk -o /dev/null -w '%{http_code}' \
-            --resolve "$domain:443:127.0.0.1" "https://$domain/" || true)"
-          if [ "$unauth" != "401" ]; then
-            echo "expected 401 without credentials on $domain, got $unauth" >&2
-            exit 1
-          fi
-          echo "auth enforced (401 without credentials)"
-
-          docker exec "$(docker ps -q --filter label=vault.role=sidecar | head -1)" \
-            node --experimental-strip-types /app/src/server/cli.ts status 2>&1 | tail -3
-          REMOTE
-
-      - name: Revoke key
-        if: always()
-        run: rm -f ~/.ssh/id_deploy
+          curl -fsSL -X GET "${{ secrets.COOLIFY_WEBHOOK_URL }}" \
+            -H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}"
+          echo
+          echo "Coolify redeploy triggered — follow it in the Coolify UI."
