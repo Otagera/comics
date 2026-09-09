@@ -65,6 +65,9 @@
      integration -- the sketches then follow the theme with no extra work.
      `paper` is the label colour on a solid button, so it must contrast with
      `fill`, not match the panel. */
+  --panel-solid: #ffffff;
+  --scrim: rgba(11, 15, 20, 0.38);
+
   --drawably-stroke: #46525e;
   --drawably-fill: var(--accent);
   --drawably-paper: #ffffff;
@@ -99,6 +102,9 @@
   --track: rgba(255, 255, 255, 0.10);
   --field: rgba(255, 255, 255, 0.05);
   /* Chalk on slate rather than ink on paper. */
+  --panel-solid: #1b2027;
+  --scrim: rgba(0, 0, 0, 0.66);
+
   --drawably-stroke: #8e99a5;
   --drawably-fill: var(--accent);
   --drawably-paper: #f4f7f9;
@@ -134,7 +140,10 @@
     --track: rgba(255, 255, 255, 0.10);
     --field: rgba(255, 255, 255, 0.05);
     /* Chalk on slate rather than ink on paper. */
-    --drawably-stroke: #8e99a5;
+    --panel-solid: #1b2027;
+    --scrim: rgba(0, 0, 0, 0.66);
+
+  --drawably-stroke: #8e99a5;
     --drawably-fill: var(--accent);
     --drawably-paper: #f4f7f9;
     --drawably-width: 1.5;
@@ -400,4 +409,23 @@ body {
 /* The card supplies its own 16px; inside a cover the tile owns the padding. */
 .cover .drawably-card {
   padding: 0;
+}
+
+/* ------------------------------------------------------------------ modal */
+
+/* A dialog needs to sit on something opaque. The frosted panel reads well
+   against the page background, but over a dense grid of covers it leaves the
+   text competing with whatever is behind it -- badly so in dark, where the
+   panel is only 5% white. */
+.scrim {
+  background: var(--scrim);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+.modal {
+  background: var(--panel-solid);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
 }

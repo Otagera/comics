@@ -162,7 +162,7 @@ function Vault() {
           <div className="flex flex-wrap gap-1.5">
             {SHELVES.map((s) => (
               <DrawablyButton
-                key={s.key}
+                key={`${s.key}-${shelf === s.key ? 'on' : 'off'}`}
                 seed={seedFrom(s.key)}
                 variant={shelf === s.key ? 'solid' : 'outline'}
                 onClick={() => setShelf(s.key)}
@@ -275,12 +275,11 @@ function Detail({
 
   return (
     <div
-      className="fixed inset-0 z-40 flex items-end justify-center sm:items-center"
-      style={{ background: 'color-mix(in srgb, #0b0f14 42%, transparent)' }}
+      className="scrim fixed inset-0 z-40 flex items-end justify-center p-0 sm:items-center sm:p-4"
       onClick={onClose}
     >
       <div
-        className="panel panel-strong max-h-[88vh] w-full max-w-lg overflow-auto p-5"
+        className="modal max-h-[88vh] w-full max-w-lg overflow-auto p-5"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start gap-4">
@@ -302,7 +301,7 @@ function Detail({
             )}
             <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
               {item.kind && (
-                <DrawablyBadge seed={seedFrom(item.id + 'k')} variant="scribble" className="text-[11px]">
+                <DrawablyBadge seed={seedFrom(item.id + 'k')} className="text-[11px]">
                   {item.kind}
                 </DrawablyBadge>
               )}
@@ -353,7 +352,7 @@ function Detail({
         <div className="flex flex-wrap gap-1.5">
           {STATUSES.map((s) => (
             <DrawablyButton
-              key={s.key}
+              key={`${s.key}-${item.readingStatus === s.key ? 'on' : 'off'}`}
               seed={seedFrom(item.id + s.key)}
               variant={item.readingStatus === s.key ? 'solid' : 'outline'}
               tone={s.key === 'abandoned' && item.readingStatus !== s.key ? 'neutral' : undefined}
