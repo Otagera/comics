@@ -93,7 +93,21 @@ jobs:
     steps:
       - name: Trigger Coolify redeploy
         run: |
-          curl -fsSL -X GET "${{ secrets.COOLIFY_WEBHOOK_URL }}" \
-            -H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}"
+          # Not `curl -f`: that exits 22 with no status code and no body, which
+          # made two real misconfigurations (a token without deploy rights, and
+          # the wrong webhook URL) look identical from the log.
+          code="$(curl -sS -o /tmp/coolify.out -w '%{http_code}' \
+            -X GET "${{ secrets.COOLIFY_WEBHOOK_URL }}" \
+            -H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}" || echo 000)"
+          echo "HTTP $code"
+          head -c 2000 /tmp/coolify.out || true
           echo
-          echo "Coolify redeploy triggered — follow it in the Coolify UI."
+          case "$code" in
+            2*)  echo "Coolify redeploy triggered — follow it in the Coolify UI." ;;
+            401) echo "::error::401 — COOLIFY_TOKEN was not accepted." ; exit 1 ;;
+            403) echo "::error::403 — token accepted but lacks deploy permission, or belongs to a different Coolify team than the resource." ; exit 1 ;;
+            404|405)
+                 echo "::error::$code — wrong URL. Use the API deploy endpoint, not the git webhook: https://<coolify-host>/api/v1/deploy?uuid=<resource-uuid>&force=false" ; exit 1 ;;
+            000) echo "::error::could not reach Coolify at all — check COOLIFY_WEBHOOK_URL is reachable from GitHub." ; exit 1 ;;
+            *)   echo "::error::unexpected HTTP $code from Coolify." ; exit 1 ;;
+          esac

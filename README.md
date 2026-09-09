@@ -34,8 +34,8 @@ Repository secrets:
 
 | secret | value |
 | --- | --- |
-| `COOLIFY_WEBHOOK_URL` | the resource's deploy webhook (Coolify -> resource -> Webhooks) |
-| `COOLIFY_TOKEN` | a Coolify API token (Keys & Tokens -> API tokens) |
+| `COOLIFY_WEBHOOK_URL` | `https://<coolify-host>/api/v1/deploy?uuid=<resource-uuid>&force=false` — the **API** endpoint, not the git webhook under `/webhooks/source/...`, which is POST-only and expects a signed git payload |
+| `COOLIFY_TOKEN` | a Coolify API token with **deploy** permission, in the same team as the resource (Keys & Tokens -> API tokens). A token without it returns 403; an unaccepted one returns 401 |
 
 One-time setup in Coolify:
 
