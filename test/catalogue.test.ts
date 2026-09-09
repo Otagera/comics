@@ -189,3 +189,28 @@ test('reconcile repairs a stale local_path even when state is already local', ()
   const path = db.prepare('SELECT local_path FROM comic WHERE id = ?').get(c.id) as { local_path: string }
   assert.equal(path.local_path, dest, 'local_path must point at the real file')
 })
+
+test('canonical naming is shared by wishes and Notion rows', async () => {
+  const { canonicalName } = await import('../src/server/naming.ts')
+  assert.equal(canonicalName({ series: 'Saga', issue: '12', year: 2024 }), 'Saga #12 (2024)')
+  assert.equal(canonicalName({ series: 'Saga', issue: null, volume: 1, year: 2024 }), 'Saga v01 (2024)')
+  assert.equal(canonicalName({ series: 'Saga', year: null }), 'Saga')
+  assert.equal(canonicalName({ series: 'Saga', issue: '3' }), 'Saga #3')
+})
+
+test('a structured wish keeps its fields for later matching', () => {
+  const id = addWish('Saga #12 (2024)', {
+    series: 'Saga',
+    issue: '12',
+    year: 2024,
+    publisher: 'Image',
+  })
+  const w = listWishes().find((x) => x.id === id)!
+  assert.equal(w.series, 'Saga')
+  assert.equal(w.issue, '12')
+  assert.equal(w.year, 2024)
+  assert.equal(w.publisher, 'Image')
+  // norm_key comes from the series, which is what a Drive filename yields.
+  assert.equal(w.norm_key, 'saga')
+  assert.equal(w.status, 'wanted', 'nothing in Drive matches it yet')
+})

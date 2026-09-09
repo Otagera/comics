@@ -14,6 +14,9 @@
  *   cli.ts status       print a summary
  *   cli.ts fetch <id>   fetch one comic by internal id
  *   cli.ts list [query] list the catalogue
+ *   cli.ts notion-propose  show candidate Vault <-> Notion links (writes nothing)
+ *   cli.ts notion-link --all  store every proposed link at or above the threshold
+ *   cli.ts notion-sync     push Vault state into Notion (one-way)
  */
 
 import { refreshIndex } from './drive/indexSync.ts'
@@ -22,6 +25,8 @@ import { evict, describeEviction, evictCandidates } from './cache/evict.ts'
 import { fetchComic, cacheSummary, reconcileLocal } from './cache/fetch.ts'
 import { listCatalogue } from './catalogue.ts'
 import { syncCovers } from './covers.ts'
+import { proposeLinks, confirmLinks, syncToNotion } from './notion/sync.ts'
+import { notionConfig } from './notion/client.ts'
 import { humanBytes } from './cache/volume.ts'
 import { closeDb } from './db/index.ts'
 
@@ -120,6 +125,35 @@ async function main(): Promise<number> {
       await cmdSync()
       cmdEvict(false)
       return 0
+    case 'notion-propose': {
+      if (!notionConfig()) { log('notion: NOTION_TOKEN / NOTION_DATABASE_ID not set'); return 2 }
+      const props = await proposeLinks()
+      if (!props.length) { log('notion: no candidate links'); return 0 }
+      log(`notion: ${props.length} candidate link(s)`)
+      for (const p of props) {
+        log(`  ${p.score.toFixed(2)}  ${p.comicName}`)
+        log(`        -> "${p.notionName}" [${p.notionStatus ?? 'no status'}] ${p.notionPageId}`)
+      }
+      return 0
+    }
+    case 'notion-link': {
+      if (!notionConfig()) { log('notion: NOTION_TOKEN / NOTION_DATABASE_ID not set'); return 2 }
+      if (!rest.includes('--all')) {
+        process.stderr.write('refusing to link without --all; run notion-propose first\n')
+        return 2
+      }
+      const props = await proposeLinks()
+      const n = confirmLinks(props.map((p) => ({ comicId: p.comicId, notionPageId: p.notionPageId })))
+      log(`notion: linked ${n} row(s); names left untouched`)
+      return 0
+    }
+    case 'notion-sync': {
+      if (!notionConfig()) { log('notion: NOTION_TOKEN / NOTION_DATABASE_ID not set'); return 2 }
+      const r = await syncToNotion()
+      log(`notion: ${r.created} created, ${r.updated} updated, ${r.linked} newly linked, ` +
+          `${r.wishesSynced} wish(es), ${r.skipped} skipped`)
+      return 0
+    }
     case 'reconcile':
       cmdReconcile()
       return 0
@@ -142,7 +176,8 @@ async function main(): Promise<number> {
     }
     default:
       process.stderr.write(
-        'usage: cli.ts <index|sync|evict|reconcile|maintenance|status|list|fetch>\n',
+        'usage: cli.ts <index|sync|evict|reconcile|maintenance|status|list|fetch|' +
+        'notion-propose|notion-link|notion-sync>\n',
       )
       return 2
   }

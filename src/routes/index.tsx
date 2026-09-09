@@ -8,7 +8,16 @@ import {
   DrawablyCircle,
 } from 'drawably/react'
 
-import { getVault, fetchTitle, setPin, setStatus, runIndexRefresh } from '../server/fns.ts'
+import {
+  getVault,
+  fetchTitle,
+  setPin,
+  setStatus,
+  runIndexRefresh,
+  createWish,
+  updateWishStatus,
+} from '../server/fns.ts'
+import { WishlistView, type Wish } from '../components/WishlistView.tsx'
 import { CapacityMeter } from '../components/CapacityMeter.tsx'
 import { Cover, seedFrom, type CoverItem } from '../components/Cover.tsx'
 import { ThemeToggle } from '../components/ThemeToggle.tsx'
@@ -43,6 +52,13 @@ function Vault() {
   const [fetchState, setFetchState] = useState<Record<string, BtnState>>({})
   const [refreshState, setRefreshState] = useState<BtnState>('idle')
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  // Catalogue and wishlist are separate views, not two chips in the same
+  // filter row: one is about comics you hold, the other about ones you do not.
+  const [view, setView] = useState<'catalogue' | 'wishlist'>('catalogue')
+  const [wishBusy, setWishBusy] = useState(false)
+
+  const wishes = (data.wishes ?? []) as Wish[]
+  const arrived = wishes.filter((w) => w.status === 'available').length
 
   const items = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -83,6 +99,26 @@ function Vault() {
 
   async function doStatus(item: Item, status: Item['readingStatus']) {
     await setStatus({ data: { id: item.id, status: status === item.readingStatus ? null : status } })
+    refresh()
+  }
+
+  async function doAddWish(w: {
+    series: string
+    issue?: string
+    year?: number
+    publisher?: string
+  }) {
+    setWishBusy(true)
+    try {
+      await createWish({ data: w })
+      refresh()
+    } finally {
+      setWishBusy(false)
+    }
+  }
+
+  async function doWishStatus(id: string, status: Wish['status']) {
+    await updateWishStatus({ data: { id, status } })
     refresh()
   }
 
@@ -134,6 +170,28 @@ function Vault() {
 
           <div className="hidden items-center gap-2 sm:flex">
             <DrawablyButton
+              key={`view-${view}`}
+              seed={107}
+              variant={view === 'wishlist' ? 'solid' : 'outline'}
+              onClick={() => setView(view === 'wishlist' ? 'catalogue' : 'wishlist')}
+              className="relative text-[13px]"
+              title={
+                arrived > 0
+                  ? `${arrived} wished title(s) have arrived in Drive`
+                  : 'Titles you want that are not in Drive yet'
+              }
+            >
+              Wishlist
+              {arrived > 0 && (
+                <span
+                  className="tnum ml-1.5 inline-grid h-[18px] min-w-[18px] place-items-center rounded-full px-1 text-[10px] font-semibold"
+                  style={{ background: 'var(--accent)', color: '#fff' }}
+                >
+                  {arrived}
+                </span>
+              )}
+            </DrawablyButton>
+            <DrawablyButton
               seed={101}
               state={refreshState}
               onClick={doRefresh}
@@ -151,6 +209,19 @@ function Vault() {
       </header>
 
       <main className="mx-auto max-w-[1400px] px-5 pb-20 pt-6">
+        {view === 'wishlist' ? (
+          <WishlistView
+            wishes={wishes}
+            busy={wishBusy}
+            onAdd={doAddWish}
+            onStatus={doWishStatus}
+            onOpenMatch={(id) => {
+              setView('catalogue')
+              setSelectedId(id)
+            }}
+          />
+        ) : (
+        <>
         <div className="mb-6 flex flex-wrap items-center gap-2">
           <DrawablyInput
             seed={202}
@@ -221,6 +292,8 @@ function Vault() {
               </button>
             ))}
           </div>
+        )}
+        </>
         )}
       </main>
 

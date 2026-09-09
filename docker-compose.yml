@@ -90,6 +90,9 @@ services:
       # hard-coded into a public repository. Unset means no auth (local dev).
       - CS_AUTH_USER=${SIDECAR_USER}
       - CS_AUTH_PASSWORD=${SIDECAR_PASSWORD}
+      # One-way Vault -> Notion sync. Unset means the sync is simply off.
+      - NOTION_TOKEN=${NOTION_TOKEN}
+      - NOTION_DATABASE_ID=${NOTION_DATABASE_ID}
     volumes:
       - /mnt/HC_Volume_106816620:/vault
       - /root/.config/rclone/rclone.conf:/config/rclone.conf:ro

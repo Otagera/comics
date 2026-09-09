@@ -27,6 +27,9 @@ import { evict, evictCandidates } from './cache/evict.ts'
 import { setReadingStatus, clearReadingStatus, syncProgress, type ReadingStatus } from './progress.ts'
 import { addWish, listWishes, setWishStatus, type WishlistRow } from './wishlist.ts'
 import { ping } from './komga/client.ts'
+import { canonicalName } from './naming.ts'
+import { proposeLinks, confirmLinks, syncToNotion } from './notion/sync.ts'
+import { notionConfig } from './notion/client.ts'
 import { cachedCoverIds, syncCovers } from './covers.ts'
 
 // ---------------------------------------------------------------- catalogue
@@ -49,6 +52,7 @@ export const getVault = createServerFn({ method: 'GET' })
       lastIndexRun: lastIndexRun() ?? null,
       komgaReachable: await ping(),
       items: listCatalogue(data).map((i) => ({ ...i, hasCover: coverIds.has(i.id) })),
+      wishes: listWishes(),
     }
   })
 
@@ -115,8 +119,27 @@ export const getWishlist = createServerFn({ method: 'GET' })
   .handler(({ data }) => listWishes(data))
 
 export const createWish = createServerFn({ method: 'POST' })
-  .validator((d: { query: string; series?: string; year?: number; publisher?: string }) => d)
-  .handler(({ data }) => ({ id: addWish(data.query, data) }))
+  .validator(
+    (d: {
+      series: string
+      issue?: string | null
+      year?: number | null
+      publisher?: string | null
+    }) => d,
+  )
+  .handler(({ data }) => {
+    const series = data.series.trim()
+    if (!series) throw new Error('a series name is required')
+    const query = canonicalName({ series, issue: data.issue, year: data.year })
+    return {
+      id: addWish(query, {
+        series,
+        issue: data.issue?.trim() || null,
+        year: data.year ?? null,
+        publisher: data.publisher?.trim() || null,
+      }),
+    }
+  })
 
 export const updateWishStatus = createServerFn({ method: 'POST' })
   .validator((d: { id: string; status: WishlistRow['status'] }) => d)
@@ -124,3 +147,20 @@ export const updateWishStatus = createServerFn({ method: 'POST' })
     setWishStatus(data.id, data.status)
     return { ok: true }
   })
+
+// ---------------------------------------------------------------- notion (v2)
+
+export const getNotionStatus = createServerFn({ method: 'GET' }).handler(() => ({
+  configured: notionConfig() !== null,
+}))
+
+/** Candidate links for the one-time pass. Reads only; writes nothing. */
+export const getNotionLinkProposals = createServerFn({ method: 'GET' }).handler(() =>
+  proposeLinks(),
+)
+
+export const applyNotionLinks = createServerFn({ method: 'POST' })
+  .validator((pairs: Array<{ comicId: string; notionPageId: string }>) => pairs)
+  .handler(({ data }) => ({ linked: confirmLinks(data) }))
+
+export const runNotionSync = createServerFn({ method: 'POST' }).handler(() => syncToNotion())
