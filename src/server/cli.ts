@@ -8,7 +8,7 @@
  * stripping and needs no node_modules in the runtime image.
  *
  *   cli.ts index        refresh the Drive index into SQLite
- *   cli.ts sync         pull read progress from Komga
+ *   cli.ts sync         pull read progress from Komga and cache covers
  *   cli.ts evict        enforce the volume budget
  *   cli.ts maintenance  all three, in the order that matters
  *   cli.ts status       print a summary
@@ -21,6 +21,7 @@ import { syncProgress } from './progress.ts'
 import { evict, describeEviction, evictCandidates } from './cache/evict.ts'
 import { fetchComic, cacheSummary, reconcileLocal } from './cache/fetch.ts'
 import { listCatalogue } from './catalogue.ts'
+import { syncCovers } from './covers.ts'
 import { humanBytes } from './cache/volume.ts'
 import { closeDb } from './db/index.ts'
 
@@ -51,6 +52,12 @@ async function cmdSync(): Promise<void> {
   } catch (err) {
     // Komga being down must not abort the rest of maintenance.
     log(`progress: skipped (${(err as Error).message})`)
+  }
+  try {
+    const c = await syncCovers()
+    if (c.fetched || c.failed) log(`covers: ${c.fetched} cached, ${c.failed} failed`)
+  } catch (err) {
+    log(`covers: skipped (${(err as Error).message})`)
   }
 }
 

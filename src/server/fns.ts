@@ -27,12 +27,32 @@ import { evict, evictCandidates } from './cache/evict.ts'
 import { setReadingStatus, clearReadingStatus, syncProgress, type ReadingStatus } from './progress.ts'
 import { addWish, listWishes, setWishStatus, type WishlistRow } from './wishlist.ts'
 import { ping } from './komga/client.ts'
+import { cachedCoverIds, syncCovers } from './covers.ts'
 
 // ---------------------------------------------------------------- catalogue
 
 export const getCatalogue = createServerFn({ method: 'GET' })
   .validator((f: CatalogueFilter | undefined) => f ?? {})
   .handler(({ data }) => listCatalogue(data))
+
+/**
+ * Everything the catalogue page renders, in one round trip: the header's
+ * capacity figures plus the full grid. Cover availability is a filesystem
+ * check, so it is resolved here once rather than per tile.
+ */
+export const getVault = createServerFn({ method: 'GET' })
+  .validator((f: CatalogueFilter | undefined) => f ?? {})
+  .handler(async ({ data }) => {
+    const coverIds = cachedCoverIds()
+    return {
+      cache: cacheSummary(),
+      lastIndexRun: lastIndexRun() ?? null,
+      komgaReachable: await ping(),
+      items: listCatalogue(data).map((i) => ({ ...i, hasCover: coverIds.has(i.id) })),
+    }
+  })
+
+export const runCoverSync = createServerFn({ method: 'POST' }).handler(() => syncCovers())
 
 export const getSeriesGroups = createServerFn({ method: 'GET' })
   .validator((f: CatalogueFilter | undefined) => f ?? {})
