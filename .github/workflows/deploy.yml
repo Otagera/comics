@@ -1,7 +1,14 @@
 name: Build & Deploy
 
 # Push to main (or run manually) builds the sidecar image, publishes it to
-# GHCR, and tells lumina-1 to pull it.
+# GHCR, and deploys the whole stack on lumina-1.
+#
+# This workflow is the only thing that deploys these services. Nothing else
+# should manage them: an orchestrator that also deploys them would write its
+# own Traefik labels beside ours, and its router would carry no basic-auth
+# middleware -- the sidecar would quietly serve unauthenticated on a router
+# that looks fine. The smoke test below asserts auth is still enforced, so
+# that failure is loud rather than silent.
 #
 # The host never builds. It used to, and the layer cache repeatedly filled a
 # root disk that sits around 90% -- roughly 600 MB reclaimed per prune. CI has
@@ -148,10 +155,12 @@ jobs:
             printf '\nSIDECAR_IMAGE=%s\n' "$IMAGE" >> .env
           fi
 
-          docker compose pull sidecar
-          # --no-build: the host must never build. If the image is missing,
+          # The whole stack, not just the sidecar: this workflow owns the
+          # deployment, so a compose change to any service has to land too.
+          docker compose pull
+          # --no-build: the host must never build. If an image is missing,
           # fail loudly here instead of quietly compiling on a full disk.
-          docker compose up -d --no-build sidecar
+          docker compose up -d --no-build --remove-orphans
 
           docker logout ghcr.io >/dev/null 2>&1 || true
           # Keep the root disk from creeping back up.
@@ -170,19 +179,44 @@ jobs:
           cd "$DEPLOY_PATH"
           port="$(grep -m1 '^SIDECAR_LOCAL_PORT=' .env | cut -d= -f2- || true)"
           port="${port:-3001}"
-          for i in $(seq 1 30); do
+          domain="$(grep -m1 '^SIDECAR_DOMAIN=' .env | cut -d= -f2- || true)"
+
+          # 1. the app is up
+          ok=""
+          for i in $(seq 1 60); do
             code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/" || true)"
-            if [ "$code" = "200" ]; then
-              echo "sidecar healthy after ${i}s"
-              docker exec comics-sidecar node --experimental-strip-types \
-                /app/src/server/cli.ts status 2>&1 | tail -3
-              exit 0
-            fi
+            if [ "$code" = "200" ]; then ok=1; echo "sidecar healthy after ${i}s"; break; fi
             sleep 1
           done
-          echo "sidecar did not return 200 within 30s" >&2
-          docker logs --tail 40 comics-sidecar >&2
-          exit 1
+          if [ -z "$ok" ]; then
+            echo "sidecar did not return 200 within 60s" >&2
+            docker logs --tail 40 "$(docker ps -q --filter label=vault.role=sidecar | head -1)" >&2
+            exit 1
+          fi
+
+          # 2. exactly one router pair claims the domain. Two means something
+          #    else is also publishing this service.
+          claims="$(for c in $(docker ps -q); do
+              docker inspect "$c" --format '{{json .Config.Labels}}' \
+                | tr ',' '\n' | grep -qF "Host(\`$domain\`)" && docker inspect "$c" --format '{{.Name}}'
+            done | wc -l | tr -d ' ')"
+          if [ "$claims" != "1" ]; then
+            echo "expected exactly 1 container claiming $domain, found $claims" >&2
+            exit 1
+          fi
+
+          # 3. auth is actually enforced through the proxy. This is the guard
+          #    that catches a competing router with no auth middleware.
+          unauth="$(curl -sk -o /dev/null -w '%{http_code}' \
+            --resolve "$domain:443:127.0.0.1" "https://$domain/" || true)"
+          if [ "$unauth" != "401" ]; then
+            echo "expected 401 without credentials on $domain, got $unauth" >&2
+            exit 1
+          fi
+          echo "auth enforced (401 without credentials)"
+
+          docker exec "$(docker ps -q --filter label=vault.role=sidecar | head -1)" \
+            node --experimental-strip-types /app/src/server/cli.ts status 2>&1 | tail -3
           REMOTE
 
       - name: Revoke key

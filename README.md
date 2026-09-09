@@ -25,9 +25,17 @@ Cloudflare): the certificate resolver uses an HTTP-01 challenge.
 ### Continuous deployment
 
 Push to `main` and GitHub Actions does it: run tests, build the image, push it
-to GHCR, then SSH to the host to pull and restart. The host never builds --
-its root disk has no room for a layer cache, so CI carries that cost and the
-host only pulls a finished image.
+to GHCR, then SSH to the host to pull and restart the stack. The host never
+builds -- its root disk has no room for a layer cache, so CI carries that cost
+and the host only pulls a finished image.
+
+**This workflow is the only thing that deploys these services.** Routing lives
+in the Traefik labels in `docker-compose.yml`. If another orchestrator also
+deployed them it would add its own labels beside ours, and its router would
+carry no basic-auth middleware -- the sidecar would serve unauthenticated on a
+router that looks perfectly healthy. The deploy therefore asserts, after every
+release, that exactly one container claims the domain and that the domain
+returns 401 without credentials.
 
 Each deploy pins `SIDECAR_IMAGE` in the host's `.env` to the commit's image
 tag, so the running container is always traceable to a commit and a rollback
