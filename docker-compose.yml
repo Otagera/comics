@@ -46,10 +46,14 @@ services:
       - traefik.http.services.komga.loadbalancer.server.port=25600
 
   sidecar:
+    # CI builds this and pushes it to GHCR, and the host only ever pulls --
+    # building on lumina-1 filled its root disk with layer cache. `build` is
+    # kept so `docker compose up --build` still works for local development;
+    # deploys use `docker compose up --no-build`.
+    image: ${SIDECAR_IMAGE:-comics-sidecar:local}
     build:
       context: .
       dockerfile: Dockerfile
-    image: comics-sidecar:local
     container_name: comics-sidecar
     restart: unless-stopped
     depends_on:

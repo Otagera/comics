@@ -1,4 +1,6 @@
 @import 'tailwindcss';
+@import 'drawably/style.css';
+@import 'drawably/font.css';
 
 /* ==========================================================================
    Sunset-vault
@@ -59,6 +61,17 @@
 
   --track: rgba(30, 41, 52, 0.10);
   --field: rgba(255, 255, 255, 0.75);
+  /* drawably draws with these; mapping them onto our tokens is the whole
+     integration -- the sketches then follow the theme with no extra work.
+     `paper` is the label colour on a solid button, so it must contrast with
+     `fill`, not match the panel. */
+  --drawably-stroke: #46525e;
+  --drawably-fill: var(--accent);
+  --drawably-paper: #ffffff;
+  --drawably-width: 1.5;
+  --drawably-error: #b4443c;
+  --drawably-success: var(--accent-deep);
+
 }
 
 :root[data-theme='dark'] {
@@ -85,6 +98,14 @@
 
   --track: rgba(255, 255, 255, 0.10);
   --field: rgba(255, 255, 255, 0.05);
+  /* Chalk on slate rather than ink on paper. */
+  --drawably-stroke: #8e99a5;
+  --drawably-fill: var(--accent);
+  --drawably-paper: #f4f7f9;
+  --drawably-width: 1.5;
+  --drawably-error: #e0706a;
+  --drawably-success: #46c2b0;
+
 }
 
 /* First load with no stored choice follows the OS. */
@@ -112,6 +133,14 @@
 
     --track: rgba(255, 255, 255, 0.10);
     --field: rgba(255, 255, 255, 0.05);
+    /* Chalk on slate rather than ink on paper. */
+    --drawably-stroke: #8e99a5;
+    --drawably-fill: var(--accent);
+    --drawably-paper: #f4f7f9;
+    --drawably-width: 1.5;
+    --drawably-error: #e0706a;
+    --drawably-success: #46c2b0;
+
   }
 }
 
@@ -331,4 +360,44 @@ body {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
   border-radius: 4px;
+}
+
+/* ------------------------------------------------------------- hand-drawn */
+
+/* The pen face is an accent, not a content font: the wordmark and the odd
+   deliberate flourish. Titles stay Outfit, figures stay JetBrains Mono. */
+.pen {
+  font-family: 'Drawably Pen', var(--font-display);
+  letter-spacing: 0.01em;
+}
+
+/* A sketched tile for a title that is not downloaded yet. The card's own pen
+   sketch *is* the placeholder art, so remote reads as drawn and local reads
+   as photographed -- the status lands before any label is read. */
+.cover .drawably-card {
+  display: block;
+  height: 100%;
+  width: 100%;
+}
+
+.sketch-tile {
+  display: flex;
+  height: 100%;
+  width: 100%;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 0.7rem;
+}
+
+/* The library hard-codes its labels to Inter. Only the label -- the SVG is
+   left alone, as its docs ask. Type stays Outfit across the whole UI. */
+.drawably-button,
+.drawably-badge,
+:is(.drawably-inputbox, .drawably-textarea) :is(input, textarea) {
+  font-family: var(--font-display);
+}
+
+/* The card supplies its own 16px; inside a cover the tile owns the padding. */
+.cover .drawably-card {
+  padding: 0;
 }

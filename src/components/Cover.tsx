@@ -1,15 +1,18 @@
+import { DrawablyCard } from 'drawably/react'
+
 /**
  * A cover tile, carrying the whole status language.
  *
  *   local     real thumbnail from Komga, full colour, lifted
- *   remote    typographic placeholder, desaturated and stepped back to ~55%
+ *   remote    a hand-drawn card -- literally a sketch of a comic you do not
+ *             have yet -- desaturated and stepped back to ~55%
  *   fetching  teal "develops" up the tile like a print coming up in a tray
  *   progress  a thin sea-gradient line, only when actually part-read
  *
- * Remote titles genuinely have no cover art -- they are filenames in Drive
- * that nothing has opened -- so the placeholder is drawn from the parsed
- * metadata rather than faked. That is also what makes remote read as
- * "not here yet" without needing a badge to say so.
+ * Remote titles genuinely have no cover art: they are filenames in Drive that
+ * nothing has ever opened. Drawing them rather than faking a cover is honest,
+ * and it makes the sketch-to-photograph transition carry the status on its
+ * own -- no badge has to say "not downloaded".
  */
 
 export interface CoverItem {
@@ -27,13 +30,14 @@ export interface CoverItem {
   pinned: boolean
 }
 
-/** Stable per-title tint, kept inside the cool half of the wheel. */
-function tintFor(seed: string): string {
-  let h = 0
-  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0
-  // 168-232deg: teal through to blue-grey. Never warm -- warm was rejected.
-  const hue = 168 + (h % 64)
-  return `hsl(${hue} 22% 46%)`
+/** Stable seed per title, so a comic's sketch is its own and never re-rolls. */
+export function seedFrom(s: string): number {
+  let h = 2166136261
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  return h >>> 0
 }
 
 export function Cover({ item }: { item: CoverItem }) {
@@ -64,7 +68,7 @@ export function Cover({ item }: { item: CoverItem }) {
           className="h-full w-full object-cover"
         />
       ) : (
-        <Placeholder title={title} item={item} />
+        <Sketched title={title} item={item} />
       )}
 
       {item.pinned && (
@@ -88,51 +92,33 @@ export function Cover({ item }: { item: CoverItem }) {
   )
 }
 
-function Placeholder({ title, item }: { title: string; item: CoverItem }) {
-  const tint = tintFor(title)
-  const initial = title.replace(/^(the|a|an)\s+/i, '').charAt(0).toUpperCase()
+function Sketched({ title, item }: { title: string; item: CoverItem }) {
+  const seed = seedFrom(item.id)
 
   return (
-    <div
-      className="relative h-full w-full overflow-hidden"
-      style={{ background: `color-mix(in srgb, ${tint} 16%, var(--panel-strong))` }}
-    >
-      {/* An oversized initial as quiet texture, so the grid is not a wall of
-          identical rectangles. */}
-      <span
-        aria-hidden
-        className="pointer-events-none absolute -bottom-6 -right-3 select-none leading-none"
-        style={{
-          fontFamily: 'var(--font-display)',
-          fontWeight: 700,
-          fontSize: '9rem',
-          color: tint,
-          opacity: 0.16,
-        }}
-      >
-        {initial}
-      </span>
-
-      <div className="relative flex h-full flex-col justify-between p-3">
+    // boil is off in the grid: twenty-odd tiles all wobbling at once is noise,
+    // not charm. The interactive controls keep their boil.
+    <DrawablyCard seed={seed} boil={0} roughness={1.1} className="h-full w-full">
+      <div className="sketch-tile">
         <div
-          className="text-[13px] font-semibold leading-tight"
+          className="pen text-[15px] leading-tight"
           style={{
             color: 'var(--text)',
             display: '-webkit-box',
-            WebkitLineClamp: 4,
+            WebkitLineClamp: 5,
             WebkitBoxOrient: 'vertical',
             overflow: 'hidden',
           }}
         >
           {title}
         </div>
-        <div className="tnum text-[10px]" style={{ color: 'var(--text-2)' }}>
+        <div className="pen text-[12px]" style={{ color: 'var(--text-2)' }}>
           {[item.volume ? `v${String(item.volume).padStart(2, '0')}` : null, item.year]
             .filter(Boolean)
             .join('  ')}
-          {item.publisher ? <div className="mt-0.5">{item.publisher}</div> : null}
+          {item.publisher ? <div>{item.publisher}</div> : null}
         </div>
       </div>
-    </div>
+    </DrawablyCard>
   )
 }

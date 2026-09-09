@@ -1,9 +1,16 @@
 import { createFileRoute, useRouter } from '@tanstack/react-router'
 import { useMemo, useState, useTransition } from 'react'
+import {
+  DrawablyButton,
+  DrawablyInput,
+  DrawablyBadge,
+  DrawablyDivider,
+  DrawablyCircle,
+} from 'drawably/react'
 
 import { getVault, fetchTitle, setPin, setStatus, runIndexRefresh } from '../server/fns.ts'
 import { CapacityMeter } from '../components/CapacityMeter.tsx'
-import { Cover, type CoverItem } from '../components/Cover.tsx'
+import { Cover, seedFrom, type CoverItem } from '../components/Cover.tsx'
 import { ThemeToggle } from '../components/ThemeToggle.tsx'
 import { bytes, relativeTime } from '../lib/format.ts'
 
@@ -13,7 +20,7 @@ export const Route = createFileRoute('/')({
 })
 
 type Item = Awaited<ReturnType<typeof getVault>>['items'][number]
-
+type BtnState = 'idle' | 'loading' | 'success' | 'error'
 type Shelf = 'all' | 'local' | 'remote' | 'reading' | 'want' | 'finished' | 'abandoned'
 
 const SHELVES: Array<{ key: Shelf; label: string }> = [
@@ -33,8 +40,9 @@ function Vault() {
 
   const [shelf, setShelf] = useState<Shelf>('all')
   const [query, setQuery] = useState('')
-  const [busy, setBusy] = useState<string | null>(null)
-  const [selected, setSelected] = useState<Item | null>(null)
+  const [fetchState, setFetchState] = useState<Record<string, BtnState>>({})
+  const [refreshState, setRefreshState] = useState<BtnState>('idle')
+  const [selectedId, setSelectedId] = useState<string | null>(null)
 
   const items = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -53,20 +61,18 @@ function Vault() {
   }, [data.items, shelf, query])
 
   const shown = useMemo(() => items.reduce((n, i) => n + i.sizeBytes, 0), [items])
+  const selected = selectedId ? (data.items.find((i) => i.id === selectedId) ?? null) : null
 
-  function refresh() {
-    startTransition(() => {
-      router.invalidate()
-    })
-  }
+  const refresh = () => startTransition(() => router.invalidate())
 
   async function doFetch(item: Item) {
-    setBusy(item.id)
+    setFetchState((s) => ({ ...s, [item.id]: 'loading' }))
     try {
       await fetchTitle({ data: item.id })
+      setFetchState((s) => ({ ...s, [item.id]: 'success' }))
       refresh()
-    } finally {
-      setBusy(null)
+    } catch {
+      setFetchState((s) => ({ ...s, [item.id]: 'error' }))
     }
   }
 
@@ -80,6 +86,18 @@ function Vault() {
     refresh()
   }
 
+  async function doRefresh() {
+    setRefreshState('loading')
+    try {
+      await runIndexRefresh()
+      setRefreshState('success')
+      refresh()
+      setTimeout(() => setRefreshState('idle'), 1600)
+    } catch {
+      setRefreshState('error')
+    }
+  }
+
   return (
     <div className="min-h-screen">
       {/* The capacity meter is persistent: it rides the header so a download
@@ -91,10 +109,7 @@ function Vault() {
         <div className="mx-auto flex max-w-[1400px] flex-col gap-3 px-5 py-3 sm:flex-row sm:items-center sm:gap-8">
           <div className="flex items-center justify-between gap-3 sm:justify-start">
             <div className="flex items-baseline gap-2.5">
-              <span
-                className="text-[19px] font-semibold tracking-tight"
-                style={{ color: 'var(--text)' }}
-              >
+              <span className="pen text-[26px] leading-none" style={{ color: 'var(--text)' }}>
                 Vault
               </span>
               <span className="tnum text-[11px]" style={{ color: 'var(--text-3)' }}>
@@ -118,65 +133,56 @@ function Vault() {
           </div>
 
           <div className="hidden items-center gap-2 sm:flex">
-            <button
-              className="btn h-9 px-3 text-[13px]"
-              onClick={async () => {
-                setBusy('refresh')
-                try {
-                  await runIndexRefresh()
-                  refresh()
-                } finally {
-                  setBusy(null)
-                }
-              }}
-              disabled={busy === 'refresh'}
+            <DrawablyButton
+              seed={101}
+              state={refreshState}
+              onClick={doRefresh}
+              disabled={refreshState === 'loading'}
+              className="text-[13px]"
               title={`Last refreshed ${relativeTime(
                 (data.lastIndexRun?.finished_at as string) ?? null,
               )}`}
             >
-              {busy === 'refresh' ? 'Refreshing…' : 'Refresh'}
-            </button>
+              {refreshState === 'loading' ? 'Refreshing' : 'Refresh'}
+            </DrawablyButton>
             <ThemeToggle />
           </div>
         </div>
       </header>
 
       <main className="mx-auto max-w-[1400px] px-5 pb-20 pt-6">
-        <div className="mb-5 flex flex-wrap items-center gap-2">
-          <input
+        <div className="mb-6 flex flex-wrap items-center gap-2">
+          <DrawablyInput
+            seed={202}
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search series, publisher, filename…"
-            className="field h-9 w-full max-w-xs px-3 text-[13px]"
+            onChange={(e) => setQuery(e.currentTarget.value)}
+            placeholder="Search series, publisher, filename"
+            className="w-full max-w-xs text-[13px]"
           />
           <div className="flex flex-wrap gap-1.5">
-            {SHELVES.map((s) => {
-              const active = shelf === s.key
-              return (
-                <button
-                  key={s.key}
-                  onClick={() => setShelf(s.key)}
-                  className="h-9 rounded-[10px] border px-3 text-[13px] transition-colors"
-                  style={{
-                    borderColor: active ? 'transparent' : 'var(--hairline)',
-                    background: active ? 'var(--accent)' : 'transparent',
-                    color: active ? '#fff' : 'var(--text-2)',
-                    fontWeight: active ? 500 : 400,
-                  }}
-                >
-                  {s.label}
-                </button>
-              )
-            })}
+            {SHELVES.map((s) => (
+              <DrawablyButton
+                key={s.key}
+                seed={seedFrom(s.key)}
+                variant={shelf === s.key ? 'solid' : 'outline'}
+                onClick={() => setShelf(s.key)}
+                className="text-[13px]"
+              >
+                {s.label}
+              </DrawablyButton>
+            ))}
           </div>
-          <span className="tnum ml-auto text-[12px]" style={{ color: 'var(--text-3)' }}>
-            {items.length} shown · {bytes(shown)}
+          <span className="tnum ml-auto pr-2 text-[12px]" style={{ color: 'var(--text-2)' }}>
+            <DrawablyCircle seed={seedFrom(shelf + items.length)}>{items.length}</DrawablyCircle>
+            <span className="ml-2" style={{ color: 'var(--text-3)' }}>
+              shown · {bytes(shown)}
+            </span>
           </span>
         </div>
 
         {items.length === 0 ? (
-          <p className="py-20 text-center text-[14px]" style={{ color: 'var(--text-3)' }}>
-            Nothing here.
+          <p className="pen py-20 text-center text-[18px]" style={{ color: 'var(--text-3)' }}>
+            Nothing on this shelf.
           </p>
         ) : (
           <div className="grid grid-cols-2 gap-x-4 gap-y-6 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-7">
@@ -184,13 +190,14 @@ function Vault() {
               <button
                 key={item.id}
                 className="group text-left"
-                onClick={() => setSelected(item)}
+                onClick={() => setSelectedId(item.id)}
               >
                 <Cover
                   item={
                     {
                       ...item,
-                      localState: busy === item.id ? 'fetching' : item.localState,
+                      localState:
+                        fetchState[item.id] === 'loading' ? 'fetching' : item.localState,
                     } as CoverItem
                   }
                 />
@@ -219,10 +226,10 @@ function Vault() {
 
       {selected && (
         <Detail
-          item={data.items.find((i) => i.id === selected.id) ?? selected}
-          busy={busy === selected.id}
+          item={selected}
+          state={fetchState[selected.id] ?? 'idle'}
           usage={data.cache.usage}
-          onClose={() => setSelected(null)}
+          onClose={() => setSelectedId(null)}
           onFetch={doFetch}
           onPin={doPin}
           onStatus={doStatus}
@@ -248,7 +255,7 @@ const STATUSES: Array<{ key: NonNullable<Item['readingStatus']>; label: string }
 
 function Detail({
   item,
-  busy,
+  state,
   usage,
   onClose,
   onFetch,
@@ -256,7 +263,7 @@ function Detail({
   onStatus,
 }: {
   item: Item
-  busy: boolean
+  state: BtnState
   usage: { used: number; total: number; budget: number }
   onClose: () => void
   onFetch: (i: Item) => void
@@ -274,12 +281,15 @@ function Detail({
     >
       <div
         className="panel panel-strong max-h-[88vh] w-full max-w-lg overflow-auto p-5"
-        style={{ borderBottomLeftRadius: 0, borderBottomRightRadius: 0 }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start gap-4">
           <div className="w-24 shrink-0">
-            <Cover item={{ ...item, localState: busy ? 'fetching' : item.localState } as CoverItem} />
+            <Cover
+              item={
+                { ...item, localState: state === 'loading' ? 'fetching' : item.localState } as CoverItem
+              }
+            />
           </div>
           <div className="min-w-0 flex-1">
             <h2 className="text-[17px] font-semibold leading-tight" style={{ color: 'var(--text)' }}>
@@ -290,19 +300,25 @@ function Detail({
                 {item.title}
               </p>
             )}
-            <p className="tnum mt-2 text-[12px]" style={{ color: 'var(--text-3)' }}>
-              {[
-                item.publisher,
-                item.year,
-                item.volume ? `v${String(item.volume).padStart(2, '0')}` : null,
-                item.kind,
-                bytes(item.sizeBytes),
-              ]
-                .filter(Boolean)
-                .join('  ·  ')}
+            <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+              {item.kind && (
+                <DrawablyBadge seed={seedFrom(item.id + 'k')} variant="scribble" className="text-[11px]">
+                  {item.kind}
+                </DrawablyBadge>
+              )}
+              <span className="tnum text-[12px]" style={{ color: 'var(--text-3)' }}>
+                {[
+                  item.publisher,
+                  item.year,
+                  item.volume ? `v${String(item.volume).padStart(2, '0')}` : null,
+                  bytes(item.sizeBytes),
+                ]
+                  .filter(Boolean)
+                  .join('  ·  ')}
+              </span>
             </p>
             <p
-              className="tnum mt-1 break-all text-[11px]"
+              className="tnum mt-1.5 break-all text-[11px]"
               style={{ color: 'var(--text-3)', opacity: 0.75 }}
             >
               {item.drivePath}
@@ -321,6 +337,8 @@ function Detail({
                 {item.readDate ? ` · ${relativeTime(item.readDate)}` : ''}
               </span>
             </div>
+            {/* Still an exact bar: progress is a measurement, so it stays
+                precise even though everything around it is drawn. */}
             <div className="meter-track mt-1.5" style={{ height: 4 }}>
               <div
                 className="meter-fill"
@@ -330,46 +348,57 @@ function Detail({
           </div>
         ) : null}
 
-        <div className="mt-5 flex flex-wrap gap-1.5">
-          {STATUSES.map((s) => {
-            const active = item.readingStatus === s.key
-            return (
-              <button
-                key={s.key}
-                onClick={() => onStatus(item, s.key)}
-                className="h-8 rounded-[10px] border px-2.5 text-[12px] transition-colors"
-                style={{
-                  borderColor: active ? 'transparent' : 'var(--hairline)',
-                  background: active ? 'var(--accent)' : 'transparent',
-                  color: active ? '#fff' : 'var(--text-2)',
-                }}
-              >
-                {s.label}
-              </button>
-            )
-          })}
+        <DrawablyDivider seed={seedFrom(item.id + 'd')} className="my-5" />
+
+        <div className="flex flex-wrap gap-1.5">
+          {STATUSES.map((s) => (
+            <DrawablyButton
+              key={s.key}
+              seed={seedFrom(item.id + s.key)}
+              variant={item.readingStatus === s.key ? 'solid' : 'outline'}
+              tone={s.key === 'abandoned' && item.readingStatus !== s.key ? 'neutral' : undefined}
+              onClick={() => onStatus(item, s.key)}
+              className="text-[12px]"
+            >
+              {s.label}
+            </DrawablyButton>
+          ))}
         </div>
 
-        <div className="mt-5 flex items-center gap-2">
+        <div className="mt-5 flex flex-wrap items-center gap-2">
           {isLocal ? (
             <span className="text-[13px]" style={{ color: 'var(--text-2)' }}>
-              On disk and available in Komga.
+              On disk and open in Komga.
             </span>
           ) : (
-            <button
-              className="btn btn-accent h-9 px-4 text-[13px]"
-              disabled={busy}
+            <DrawablyButton
+              seed={seedFrom(item.id + 'f')}
+              variant="solid"
+              state={state}
+              disabled={state === 'loading'}
               onClick={() => onFetch(item)}
+              className="text-[13px]"
             >
-              {busy ? 'Fetching…' : `Download ${bytes(item.sizeBytes, 0)}`}
-            </button>
+              {state === 'loading'
+                ? 'Fetching'
+                : state === 'error'
+                  ? 'Failed — retry'
+                  : `Download ${bytes(item.sizeBytes, 0)}`}
+            </DrawablyButton>
           )}
-          <button className="btn h-9 px-3 text-[13px]" onClick={() => onPin(item)}>
+          <DrawablyButton
+            seed={seedFrom(item.id + 'p')}
+            tone="neutral"
+            onClick={() => onPin(item)}
+            className="text-[13px]"
+          >
             {item.pinned ? 'Unpin' : 'Pin'}
-          </button>
-          <button className="btn ml-auto h-9 px-3 text-[13px]" onClick={onClose}>
-            Close
-          </button>
+          </DrawablyButton>
+          <span className="ml-auto">
+            <DrawablyButton seed={303} tone="neutral" onClick={onClose} className="text-[13px]">
+              Close
+            </DrawablyButton>
+          </span>
         </div>
 
         {willExceed && (

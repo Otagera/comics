@@ -22,8 +22,31 @@ docker compose up -d --build
 Both domains must resolve to the host with proxying **off** (grey cloud in
 Cloudflare): the certificate resolver uses an HTTP-01 challenge.
 
-Updating: sync the repo to the deploy directory and re-run `up -d --build`.
-`.env` and `logs/` live only on the host and are never overwritten.
+### Continuous deployment
+
+Push to `main` and GitHub Actions does it: run tests, build the image, push it
+to GHCR, then SSH to the host to pull and restart. The host never builds --
+its root disk has no room for a layer cache, so CI carries that cost and the
+host only pulls a finished image.
+
+Each deploy pins `SIDECAR_IMAGE` in the host's `.env` to the commit's image
+tag, so the running container is always traceable to a commit and a rollback
+is one `SIDECAR_IMAGE=ghcr.io/<owner>/comics-sidecar:<sha>` away.
+
+Repository secrets:
+
+| secret | value |
+| --- | --- |
+| `DEPLOY_HOST` | host address |
+| `DEPLOY_USER` | ssh user |
+| `DEPLOY_PATH` | deploy directory, e.g. `/mnt/HC_Volume_106816620/comics-stack` |
+| `DEPLOY_SSH_KEY` | private half of a key in the host's `authorized_keys` |
+| `DEPLOY_KNOWN_HOSTS` | optional; pins the host key instead of trust-on-first-use |
+
+Only `docker-compose.yml` is copied to the host. `.env` and `logs/` live there
+and are never overwritten; the application itself ships inside the image.
+
+Deploying by hand still works -- sync the repo and run `up -d --build`.
 
 ## Maintenance
 

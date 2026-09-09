@@ -1,0 +1,40 @@
+name: CI
+
+# Checks on pull requests. Pushes to main are covered by Build & Deploy,
+# which runs the same steps before it ships anything.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # Runs from TypeScript source via Node's type stripping, the same way
+      # the maintenance CLI runs in production -- so this also proves the CLI
+      # still loads with no node_modules-only dependency creeping in.
+      - name: Tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # The compose file is the deployment; a typo in it breaks a deploy that
+      # otherwise looks green. Interpolate with the example values so
+      # unresolved variables surface here rather than on the host.
+      - name: Validate docker-compose
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+          rm -f .env
