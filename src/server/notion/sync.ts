@@ -69,6 +69,39 @@ export function completedDateFor(c: VaultComic): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10)
 }
 
+const REJECTED_KEY = 'notion_rejected_links'
+
+/**
+ * Pairs a human has explicitly said are not the same thing.
+ *
+ * Persisted, because the link pass is run again every time new files land:
+ * a rejection that only lived for one session would resurface the same wrong
+ * suggestion forever. Stored in `setting` rather than a table -- it is a small
+ * list of decisions, not a domain entity.
+ */
+function rejectedPairs(): Set<string> {
+  const row = getDb().prepare('SELECT value FROM setting WHERE key = ?').get(REJECTED_KEY) as
+    | { value: string }
+    | undefined
+  if (!row) return new Set()
+  try {
+    return new Set(JSON.parse(row.value) as string[])
+  } catch {
+    return new Set()
+  }
+}
+
+export function rejectLink(comicId: string, notionPageId: string): void {
+  const set = rejectedPairs()
+  set.add(`${comicId}:${notionPageId}`)
+  getDb()
+    .prepare(
+      `INSERT INTO setting (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    )
+    .run(REJECTED_KEY, JSON.stringify([...set]))
+}
+
 export interface MatchCandidate {
   comicId: string
   comicName: string
@@ -140,12 +173,14 @@ export async function proposeLinks(minScore = 0.6): Promise<MatchCandidate[]> {
   )
   const free = rows.filter((r) => !linked.has(r.id))
 
+  const rejected = rejectedPairs()
   const out: MatchCandidate[] = []
   for (const c of loadComics()) {
     if (c.notion_page_id) continue
     const name = canonicalName(c)
     let best: { row: NotionRow; score: number } | null = null
     for (const r of free) {
+      if (rejected.has(`${c.id}:${r.id}`)) continue
       const score = matchScore(c.series ?? name, r.name)
       if (score >= minScore && (!best || score > best.score)) best = { row: r, score }
     }
@@ -223,6 +258,7 @@ export async function syncToNotion(opts: { autoLink?: boolean } = {}): Promise<S
     claimed.add(r.notion_page_id)
   }
 
+  const rejected = rejectedPairs()
   const result: SyncResult = { linked: 0, created: 0, updated: 0, wishesSynced: 0, skipped: 0 }
 
   // ---- wishlist first, so a wish that just became available hands its page
@@ -284,6 +320,7 @@ export async function syncToNotion(opts: { autoLink?: boolean } = {}): Promise<S
     if (!pageId && autoLink) {
       const cand = rows
         .filter((r) => isAdoptable(r) && !claimed.has(r.id))
+        .filter((r) => !rejected.has(`${c.id}:${r.id}`))
         .map((r) => ({ r, s: matchScore(c.series ?? '', r.name) }))
         .filter((x) => x.s >= 0.9)
         .sort((a, b) => b.s - a.s)[0]

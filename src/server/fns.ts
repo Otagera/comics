@@ -12,6 +12,8 @@
 
 import { createServerFn } from '@tanstack/react-start'
 
+import { getDb } from './db/index.ts'
+
 import {
   listCatalogue,
   listSeriesGroups,
@@ -28,7 +30,7 @@ import { setReadingStatus, clearReadingStatus, syncProgress, type ReadingStatus 
 import { addWish, listWishes, setWishStatus, type WishlistRow } from './wishlist.ts'
 import { ping } from './komga/client.ts'
 import { canonicalName } from './naming.ts'
-import { proposeLinks, confirmLinks, syncToNotion } from './notion/sync.ts'
+import { proposeLinks, confirmLinks, syncToNotion, rejectLink } from './notion/sync.ts'
 import { notionConfig } from './notion/client.ts'
 import { cachedCoverIds, syncCovers } from './covers.ts'
 
@@ -53,6 +55,15 @@ export const getVault = createServerFn({ method: 'GET' })
       komgaReachable: await ping(),
       items: listCatalogue(data).map((i) => ({ ...i, hasCover: coverIds.has(i.id) })),
       wishes: listWishes(),
+      notion: {
+        configured: notionConfig() !== null,
+        lastSync:
+          (
+            getDb()
+              .prepare("SELECT value FROM setting WHERE key = 'notion_last_sync'")
+              .get() as { value: string } | undefined
+          )?.value ?? null,
+      },
     }
   })
 
@@ -150,9 +161,12 @@ export const updateWishStatus = createServerFn({ method: 'POST' })
 
 // ---------------------------------------------------------------- notion (v2)
 
-export const getNotionStatus = createServerFn({ method: 'GET' }).handler(() => ({
-  configured: notionConfig() !== null,
-}))
+export const getNotionStatus = createServerFn({ method: 'GET' }).handler(() => {
+  const row = getDb()
+    .prepare("SELECT value FROM setting WHERE key = 'notion_last_sync'")
+    .get() as { value: string } | undefined
+  return { configured: notionConfig() !== null, lastSync: row?.value ?? null }
+})
 
 /** Candidate links for the one-time pass. Reads only; writes nothing. */
 export const getNotionLinkProposals = createServerFn({ method: 'GET' }).handler(() =>
@@ -162,5 +176,12 @@ export const getNotionLinkProposals = createServerFn({ method: 'GET' }).handler(
 export const applyNotionLinks = createServerFn({ method: 'POST' })
   .validator((pairs: Array<{ comicId: string; notionPageId: string }>) => pairs)
   .handler(({ data }) => ({ linked: confirmLinks(data) }))
+
+export const rejectNotionLink = createServerFn({ method: 'POST' })
+  .validator((d: { comicId: string; notionPageId: string }) => d)
+  .handler(({ data }) => {
+    rejectLink(data.comicId, data.notionPageId)
+    return { ok: true }
+  })
 
 export const runNotionSync = createServerFn({ method: 'POST' }).handler(() => syncToNotion())

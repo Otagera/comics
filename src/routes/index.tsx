@@ -16,7 +16,12 @@ import {
   runIndexRefresh,
   createWish,
   updateWishStatus,
+  getNotionLinkProposals,
+  applyNotionLinks,
+  rejectNotionLink,
+  runNotionSync,
 } from '../server/fns.ts'
+import { NotionView, type Proposal } from '../components/NotionView.tsx'
 import { WishlistView, type Wish } from '../components/WishlistView.tsx'
 import { CapacityMeter } from '../components/CapacityMeter.tsx'
 import { Cover, seedFrom, type CoverItem } from '../components/Cover.tsx'
@@ -54,7 +59,7 @@ function Vault() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   // Catalogue and wishlist are separate views, not two chips in the same
   // filter row: one is about comics you hold, the other about ones you do not.
-  const [view, setView] = useState<'catalogue' | 'wishlist'>('catalogue')
+  const [view, setView] = useState<'catalogue' | 'wishlist' | 'notion'>('catalogue')
   const [wishBusy, setWishBusy] = useState(false)
 
   const wishes = (data.wishes ?? []) as Wish[]
@@ -170,7 +175,17 @@ function Vault() {
 
           <div className="hidden items-center gap-2 sm:flex">
             <DrawablyButton
-              key={`view-${view}`}
+              key={`notion-${view === 'notion'}`}
+              seed={108}
+              variant={view === 'notion' ? 'solid' : 'outline'}
+              onClick={() => setView(view === 'notion' ? 'catalogue' : 'notion')}
+              className="text-[13px]"
+              title="Link and sync with the Notion tracker"
+            >
+              Notion
+            </DrawablyButton>
+            <DrawablyButton
+              key={`view-${view === 'wishlist'}`}
               seed={107}
               variant={view === 'wishlist' ? 'solid' : 'outline'}
               onClick={() => setView(view === 'wishlist' ? 'catalogue' : 'wishlist')}
@@ -209,7 +224,29 @@ function Vault() {
       </header>
 
       <main className="mx-auto max-w-[1400px] px-5 pb-20 pt-6">
-        {view === 'wishlist' ? (
+        {view === 'notion' ? (
+          <NotionView
+            configured={data.notion?.configured ?? false}
+            lastSync={data.notion?.lastSync ?? null}
+            onPropose={() => getNotionLinkProposals() as Promise<Proposal[]>}
+            onLink={async (p) => {
+              await applyNotionLinks({
+                data: [{ comicId: p.comicId, notionPageId: p.notionPageId }],
+              })
+              refresh()
+            }}
+            onReject={async (p) => {
+              await rejectNotionLink({
+                data: { comicId: p.comicId, notionPageId: p.notionPageId },
+              })
+            }}
+            onSync={async () => {
+              const r = await runNotionSync()
+              refresh()
+              return r
+            }}
+          />
+        ) : view === 'wishlist' ? (
           <WishlistView
             wishes={wishes}
             busy={wishBusy}
