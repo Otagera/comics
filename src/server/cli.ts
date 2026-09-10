@@ -161,7 +161,7 @@ async function main(): Promise<number> {
         log(`covers: ${ok ? 'extracted' : 'failed'} for ${rest[0]}`)
         return ok ? 0 : 1
       }
-      const r = await backfillCovers()
+      const r = await backfillCovers(500, rest.includes('--force'))
       log(`covers: ${r.extracted} extracted, ${r.failed} failed, of ${r.attempted} attempted`)
       return 0
     }

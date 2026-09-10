@@ -231,7 +231,8 @@ export async function coverFromDrive(comicId: string): Promise<boolean> {
         const tmp = join(coversDir(), `.${comicId}.tmp`)
         writeFileSync(tmp, buf)
         try {
-          await exec('convert', [
+          // `magick` in ImageMagick 7; `convert` is deprecated and warns.
+          await exec('magick', [
             tmp, '-auto-orient', '-resize', '480x720>', '-quality', '82', '-strip', tmp,
           ])
         } catch {
@@ -263,7 +264,7 @@ export interface CoverBackfill {
  * already generated and costs nothing -- so this only reaches for Drive when
  * there is no other source.
  */
-export async function backfillCovers(limit = 500): Promise<CoverBackfill> {
+export async function backfillCovers(limit = 500, force = false): Promise<CoverBackfill> {
   const rows = getDb()
     .prepare('SELECT id FROM comic WHERE missing_from_drive = 0 ORDER BY parsed_series')
     .all() as unknown as Array<{ id: string }>
@@ -271,7 +272,7 @@ export async function backfillCovers(limit = 500): Promise<CoverBackfill> {
   const out: CoverBackfill = { attempted: 0, extracted: 0, failed: 0 }
   for (const r of rows) {
     if (out.attempted >= limit) break
-    if (hasCover(r.id)) continue
+    if (!force && hasCover(r.id)) continue
     out.attempted++
     try {
       if (await coverFromDrive(r.id)) out.extracted++
