@@ -19,7 +19,7 @@ FROM node:24-alpine
 # libarchive-tools provides bsdtar, which reads both RAR and ZIP -- the cover
 # extractor pulls a few MB from the head of a Drive file and unpacks the first
 # page from it, so one code path covers .cbr and .cbz alike.
-RUN apk add --no-cache rclone tini libarchive-tools
+RUN apk add --no-cache rclone tini libarchive-tools imagemagick
 WORKDIR /app
 
 COPY --from=build /app/.output ./.output

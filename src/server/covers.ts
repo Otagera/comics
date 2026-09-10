@@ -23,6 +23,31 @@ import { rclone } from './drive/rclone.ts'
 
 const exec = promisify(execFile)
 
+/**
+ * Run a command, keeping its output even when it exits non-zero.
+ *
+ * bsdtar reports "Truncated input file" and exits 1 on a deliberately
+ * truncated archive -- which is exactly what we hand it -- while still having
+ * written the entry we asked for. Treating that exit code as failure threw
+ * away perfectly good covers.
+ */
+async function execKeepOutput(
+  cmd: string,
+  args: string[],
+  opts: Record<string, unknown> = {},
+): Promise<Buffer> {
+  try {
+    const { stdout } = (await exec(cmd, args, { encoding: 'buffer', ...opts } as never)) as unknown as {
+      stdout: Buffer
+    }
+    return stdout
+  } catch (err) {
+    const out = (err as { stdout?: Buffer }).stdout
+    if (out && out.length) return out
+    throw err
+  }
+}
+
 export function coversDir(): string {
   return join(config.volume, 'sidecar-data', 'covers')
 }
@@ -170,10 +195,14 @@ export async function coverFromDrive(comicId: string): Promise<boolean> {
 
       let entries: string[] = []
       try {
-        const { stdout: listing } = await exec('bsdtar', ['-tf', head], {
+        const listing = await execKeepOutput('bsdtar', ['-tf', head], {
           maxBuffer: 8 * 1024 * 1024,
         })
-        entries = listing.split('\n').map((l) => l.trim()).filter((l) => IMAGE_EXT.test(l))
+        entries = listing
+          .toString('utf8')
+          .split('\n')
+          .map((l) => l.trim())
+          .filter((l) => IMAGE_EXT.test(l))
       } catch {
         entries = []
       }
@@ -185,11 +214,9 @@ export async function coverFromDrive(comicId: string): Promise<boolean> {
       const first = entries[0]
 
       try {
-        const { stdout: bytes } = await exec('bsdtar', ['-xOf', head, first], {
+        const buf = await execKeepOutput('bsdtar', ['-xOf', head, first], {
           maxBuffer: 64 * 1024 * 1024,
-          encoding: 'buffer',
-        } as never)
-        const buf = bytes as unknown as Buffer
+        })
         if (!buf?.length) continue
         // Refuse anything that is not actually an image.
         const magic = buf.subarray(0, 4).toString('hex')
@@ -198,8 +225,19 @@ export async function coverFromDrive(comicId: string): Promise<boolean> {
           magic.startsWith('52494646') || magic.startsWith('47494638')
         if (!looksRight) continue
 
+        // A full-resolution page is 1-3 MB; eighty of those would make the
+        // grid download hundreds of megabytes. Downscale to roughly the size
+        // the tile actually renders at.
         const tmp = join(coversDir(), `.${comicId}.tmp`)
         writeFileSync(tmp, buf)
+        try {
+          await exec('convert', [
+            tmp, '-auto-orient', '-resize', '480x720>', '-quality', '82', '-strip', tmp,
+          ])
+        } catch {
+          // No ImageMagick, or an image it cannot read: keep the original
+          // rather than losing the cover entirely.
+        }
         renameSync(tmp, coverPath(comicId))
         return true
       } catch {
