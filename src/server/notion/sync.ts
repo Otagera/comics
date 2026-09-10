@@ -39,6 +39,7 @@ function isAdoptable(row: NotionRow): boolean {
 export interface VaultComic {
   id: string
   series: string | null
+  title?: string | null
   issue: string | null
   volume: number | null
   year: number | null
@@ -182,10 +183,89 @@ export function matchScore(vaultSeries: string, notionName: string): number {
   return Math.min(0.85, 0.5 + overlap * 0.35)
 }
 
+/**
+ * The key that decides what counts as one tracked thing.
+ *
+ * A numbered volume belongs to its series -- reading "Lost Girls" is one act,
+ * not three -- while an unnumbered collected edition stands alone. That second
+ * half matters: this archive holds two different Batman collections that share
+ * the series name "Batman" and are separated only by their subtitles.
+ */
+export function workKey(c: VaultComic): string {
+  const series = (c.series ?? '').trim().toLowerCase()
+  if (c.volume != null) return `s:${series}`
+  return `w:${series}|${(c.title ?? '').trim().toLowerCase()}|${c.year ?? ''}`
+}
+
+/** Display name for a work's row. Volumes are dropped; a subtitle is kept. */
+export function workName(members: VaultComic[]): string {
+  const first = members[0]
+  const years = members.map((m) => m.year).filter((y): y is number => y != null)
+  const year = years.length ? Math.min(...years) : null
+  const series = (first.series ?? '').trim()
+  if (first.volume != null) {
+    // A series row: no volume number, because later volumes join this row.
+    return year ? `${series} (${year})` : series
+  }
+  const title = (first.title ?? '').trim()
+  const base = title ? `${series}: ${title}` : series
+  return year ? `${base} (${year})` : base
+}
+
+export interface Work {
+  key: string
+  name: string
+  members: VaultComic[]
+  status: NotionStatus
+  completedDate: string | null
+  notionPageId: string | null
+}
+
+/**
+ * Roll a work's volumes up into one status.
+ *
+ * Finished only when every volume is; any real engagement with any volume
+ * makes the whole work "In progress", which is what a reader means when they
+ * are three volumes into a five-volume run.
+ */
+export function rollUp(members: VaultComic[]): NotionStatus {
+  const each = members.map(statusForComic)
+  if (each.every((s) => s === 'Done')) return 'Done'
+  if (each.some((s) => s === 'Done' || s === 'In progress')) return 'In progress'
+  if (each.some((s) => s === 'Dropped')) return 'Dropped'
+  return 'Not started'
+}
+
+export function loadWorks(): Work[] {
+  const byKey = new Map<string, VaultComic[]>()
+  for (const c of loadComics()) {
+    const k = workKey(c)
+    byKey.set(k, [...(byKey.get(k) ?? []), c])
+  }
+  const out: Work[] = []
+  for (const [key, members] of byKey) {
+    members.sort((a, b) => (a.volume ?? 0) - (b.volume ?? 0))
+    const status = rollUp(members)
+    const finished = members.filter((m) => statusForComic(m) === 'Done')
+    const dates = finished.map(completedDateFor).filter((d): d is string => d != null)
+    out.push({
+      key,
+      name: workName(members),
+      members,
+      status,
+      // The work is finished when its last volume is.
+      completedDate: status === 'Done' && dates.length ? dates.sort().at(-1)! : null,
+      notionPageId: members.find((m) => m.notion_page_id)?.notion_page_id ?? null,
+    })
+  }
+  return out
+}
+
 function loadComics(): VaultComic[] {
   return getDb()
     .prepare(
-      `SELECT c.id, c.parsed_series AS series, c.parsed_issue AS issue,
+      `SELECT c.id, c.parsed_series AS series, c.parsed_title AS title,
+              c.parsed_issue AS issue,
               c.parsed_volume AS volume, c.parsed_year AS year,
               c.notion_page_id, rs.status AS reading_status,
               COALESCE(kp.completed, 0) AS completed, kp.page, kp.read_date
@@ -213,22 +293,24 @@ export async function proposeLinks(minScore = 0.6): Promise<MatchCandidate[]> {
       unknown as Array<{ notion_page_id: string }>).map((r) => r.notion_page_id),
   )
   const free = rows.filter((r) => !linked.has(r.id))
-
   const rejected = rejectedPairs()
+
   const out: MatchCandidate[] = []
-  for (const c of loadComics()) {
-    if (c.notion_page_id) continue
-    const name = canonicalName(c)
+  for (const w of loadWorks()) {
+    if (w.notionPageId) continue
+    // The representative carries the link for the whole work; confirmLinks
+    // then writes the page id onto every volume in it.
+    const rep = w.members[0]
     let best: { row: NotionRow; score: number } | null = null
     for (const r of free) {
-      if (rejected.has(`${c.id}:${r.id}`)) continue
-      const score = matchScore(c.series ?? name, r.name)
+      if (rejected.has(`${rep.id}:${r.id}`)) continue
+      const score = matchScore(rep.series ?? w.name, r.name)
       if (score >= minScore && (!best || score > best.score)) best = { row: r, score }
     }
     if (best) {
       out.push({
-        comicId: c.id,
-        comicName: name,
+        comicId: rep.id,
+        comicName: w.members.length > 1 ? `${w.name}  (${w.members.length} volumes)` : w.name,
         notionPageId: best.row.id,
         notionName: best.row.name,
         notionStatus: best.row.status,
@@ -239,23 +321,17 @@ export async function proposeLinks(minScore = 0.6): Promise<MatchCandidate[]> {
   }
 
   // A Notion row stands for one tracked thing, so it may be claimed by at most
-  // one Vault title. Without this, several volumes of the same series all
-  // propose the one row and, once linked, take turns overwriting its status.
-  // The best-scoring claimant keeps it; the rest are dropped and will either
-  // be matched to something else or get their own row.
+  // one work. The best-scoring claimant keeps it; the rest are dropped and
+  // will either match something else or wait for a human.
   const byPage = new Map<string, MatchCandidate[]>()
   for (const c of out) {
-    const list = byPage.get(c.notionPageId) ?? []
-    list.push(c)
-    byPage.set(c.notionPageId, list)
+    byPage.set(c.notionPageId, [...(byPage.get(c.notionPageId) ?? []), c])
   }
-
   const resolved: MatchCandidate[] = []
   for (const [, list] of byPage) {
     list.sort((a, b) => b.score - a.score)
-    const winner = list[0]
-    winner.contenders = list.length
-    resolved.push(winner)
+    list[0].contenders = list.length
+    resolved.push(list[0])
   }
   return resolved.sort((a, b) => b.score - a.score || a.comicName.localeCompare(b.comicName))
 }
@@ -265,22 +341,31 @@ export function confirmLinks(
   pairs: Array<{ comicId: string; notionPageId: string }>,
 ): { linked: number; refused: number } {
   const db = getDb()
-  const stmt = db.prepare('UPDATE comic SET notion_page_id = ? WHERE id = ?')
-  const taken = db.prepare(
-    'SELECT id FROM comic WHERE notion_page_id = ? AND id <> ?',
-  )
+  const works = loadWorks()
+  const taken = db.prepare('SELECT id FROM comic WHERE notion_page_id = ? AND id <> ?')
+  const set = db.prepare('UPDATE comic SET notion_page_id = ? WHERE id = ?')
+
   let linked = 0
   let refused = 0
   db.exec('BEGIN')
   try {
     for (const p of pairs) {
-      // A page already spoken for is refused rather than stolen: two comics
-      // sharing a row means whichever syncs last decides its status.
-      if (taken.get(p.notionPageId, p.comicId)) {
+      const work = works.find((w) => w.members.some((m) => m.id === p.comicId))
+      const members = work ? work.members : []
+      if (!members.length) {
         refused++
         continue
       }
-      stmt.run(p.notionPageId, p.comicId)
+      // Refused rather than stolen: two works sharing a row means whichever
+      // syncs last decides its status.
+      const ids = new Set(members.map((m) => m.id))
+      const other = taken.get(p.notionPageId, p.comicId) as { id: string } | undefined
+      if (other && !ids.has(other.id)) {
+        refused++
+        continue
+      }
+      // Every volume of the work carries the same page id.
+      for (const m of members) set.run(p.notionPageId, m.id)
       linked++
     }
     db.exec('COMMIT')
@@ -392,37 +477,45 @@ export async function syncToNotion(opts: { autoLink?: boolean } = {}): Promise<S
     result.wishesSynced++
   }
 
-  // ---- comics
-  for (const c of loadComics()) {
-    let pageId = (db.prepare('SELECT notion_page_id FROM comic WHERE id = ?').get(c.id) as any)
-      ?.notion_page_id as string | null
+  // ---- works (a series of volumes, or a standalone collected edition)
+  for (const w of loadWorks()) {
+    let pageId = w.notionPageId
 
     if (!pageId && autoLink) {
+      const rep = w.members[0]
       const cand = rows
         .filter((r) => isAdoptable(r) && !claimed.has(r.id))
-        .filter((r) => !rejected.has(`${c.id}:${r.id}`))
-        .map((r) => ({ r, s: matchScore(c.series ?? '', r.name) }))
+        .filter((r) => !rejected.has(`${rep.id}:${r.id}`))
+        .map((r) => ({ r, s: matchScore(rep.series ?? '', r.name) }))
         .filter((x) => x.s >= AUTO_LINK_MIN)
         .sort((a, b) => b.s - a.s)[0]
       if (cand) {
         pageId = cand.r.id
         claimed.add(pageId)
-        db.prepare('UPDATE comic SET notion_page_id = ? WHERE id = ?').run(pageId, c.id)
+        for (const m of w.members) {
+          db.prepare('UPDATE comic SET notion_page_id = ? WHERE id = ?').run(pageId, m.id)
+        }
         result.linked++
       }
     }
 
-    const status = statusForComic(c)
-    const completedDate = completedDateFor(c)
-
     if (!pageId) {
+      // The tracker is a record of what has been read, not an inventory of
+      // what is on disk. A work nobody has opened gets no row; it stays in
+      // Vault until it is actually started, finished or abandoned.
+      if (w.status === 'Not started') {
+        result.skipped++
+        continue
+      }
       const created = await createRow(cfg, schema, {
-        name: canonicalName(c),
+        name: w.name,
         type: NOTION_TYPE,
-        status,
-        completedDate,
+        status: w.status,
+        completedDate: w.completedDate,
       })
-      db.prepare('UPDATE comic SET notion_page_id = ? WHERE id = ?').run(created.id, c.id)
+      for (const m of w.members) {
+        db.prepare('UPDATE comic SET notion_page_id = ? WHERE id = ?').run(created.id, m.id)
+      }
       claimed.add(created.id)
       result.created++
       continue
@@ -436,7 +529,7 @@ export async function syncToNotion(opts: { autoLink?: boolean } = {}): Promise<S
     }
 
     // Name is deliberately absent: a rename made in Notion must survive.
-    const next = statusToWrite(byId.get(pageId)?.status ?? null, status)
+    const next = statusToWrite(byId.get(pageId)?.status ?? null, w.status)
     if (!next) {
       // Notion is already at or ahead of what Vault knows. Leave it alone --
       // overwriting here is what wiped hand-kept "Done" rows once already.
@@ -446,8 +539,7 @@ export async function syncToNotion(opts: { autoLink?: boolean } = {}): Promise<S
     await updateRow(cfg, schema, pageId, {
       type: NOTION_TYPE,
       status: next,
-      // Only stamp a completion date alongside an actual completion.
-      ...(next === 'Done' ? { completedDate } : {}),
+      ...(next === 'Done' ? { completedDate: w.completedDate } : {}),
     })
     result.updated++
   }

@@ -91,3 +91,28 @@ test('the sync never moves a Notion row backwards', async () => {
   assert.equal(statusToWrite('Dropped', 'Not started'), null)
   assert.equal(statusToWrite('Dropped', 'Done'), 'Done')
 })
+
+test('volumes roll up into one work, separate editions stay apart', async () => {
+  const { workKey, workName, rollUp } = await import('../src/server/notion/sync.ts')
+  const v = (series: string, volume: number | null, title: string | null, year: number) =>
+    ({ id: series + volume, series, title, volume, year, issue: null,
+       notion_page_id: null, reading_status: null, completed: 0, page: null, read_date: null }) as any
+
+  // Three numbered volumes are one work.
+  const lg = [v('Lost Girls', 1, 'Older Children', 2006), v('Lost Girls', 2, 'Neverlands', 2006)]
+  assert.equal(workKey(lg[0]), workKey(lg[1]))
+  assert.equal(workName(lg), 'Lost Girls (2006)', 'no volume number on a series row')
+
+  // Two unnumbered collections sharing a series name are different works.
+  const b1 = v('Batman', null, '80 Years of the Bat Family', 2020)
+  const b2 = v('Batman', null, 'Year 100 and Other Tales Deluxe Edition', 2015)
+  assert.notEqual(workKey(b1), workKey(b2), 'different Batman collections must not merge')
+  assert.equal(workName([b1]), 'Batman: 80 Years of the Bat Family (2020)')
+
+  // Roll-up: finished only when every volume is.
+  const done = { ...lg[0], completed: 1 }
+  assert.equal(rollUp([done, done]), 'Done')
+  assert.equal(rollUp([done, lg[1]]), 'In progress', 'part-way through a run')
+  assert.equal(rollUp([lg[0], lg[1]]), 'Not started')
+  assert.equal(rollUp([{ ...lg[0], reading_status: 'abandoned' }, lg[1]]), 'Dropped')
+})
