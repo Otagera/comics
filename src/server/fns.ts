@@ -32,7 +32,7 @@ import { ping } from './komga/client.ts'
 import { canonicalName } from './naming.ts'
 import { proposeLinks, confirmLinks, syncToNotion, rejectLink } from './notion/sync.ts'
 import { notionConfig } from './notion/client.ts'
-import { cachedCoverIds, syncCovers } from './covers.ts'
+import { cachedCoverIds, syncCovers, backfillCovers } from './covers.ts'
 
 // ---------------------------------------------------------------- catalogue
 
@@ -68,6 +68,9 @@ export const getVault = createServerFn({ method: 'GET' })
   })
 
 export const runCoverSync = createServerFn({ method: 'POST' }).handler(() => syncCovers())
+
+/** Extract covers from the head of each Drive file for anything still blank. */
+export const runCoverBackfill = createServerFn({ method: 'POST' }).handler(() => backfillCovers())
 
 export const getSeriesGroups = createServerFn({ method: 'GET' })
   .validator((f: CatalogueFilter | undefined) => f ?? {})

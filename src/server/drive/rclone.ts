@@ -7,7 +7,7 @@
  */
 
 import { spawn } from 'node:child_process'
-import { mkdirSync } from 'node:fs'
+import { createWriteStream, mkdirSync } from 'node:fs'
 import { config } from '../config.ts'
 
 export interface DriveEntry {
@@ -39,15 +39,24 @@ export interface RcloneResult {
 
 export function rclone(
   args: string[],
-  opts: { timeoutMs?: number; onStderr?: (chunk: string) => void } = {},
+  opts: {
+    timeoutMs?: number
+    onStderr?: (chunk: string) => void
+    /** Stream stdout straight to this path instead of buffering it. */
+    outFile?: string
+  } = {},
 ): Promise<RcloneResult> {
-  const { timeoutMs = 30 * 60_000, onStderr } = opts
+  const { timeoutMs = 30 * 60_000, onStderr, outFile } = opts
 
   return new Promise((resolve, reject) => {
     const child = spawn(config.drive.rcloneBin, args, { env: rcloneEnv() })
     let stdout = ''
     let stderr = ''
     let settled = false
+    // Binary output (a slice of a comic archive) must never go through a
+    // string buffer -- it would be mangled by UTF-8 decoding.
+    const sink = outFile ? createWriteStream(outFile) : null
+    if (sink) child.stdout.pipe(sink)
 
     const timer = setTimeout(() => {
       if (settled) return
@@ -56,9 +65,11 @@ export function rclone(
       reject(new Error(`rclone ${args[0]} timed out after ${timeoutMs}ms`))
     }, timeoutMs)
 
-    child.stdout.on('data', (d) => {
-      stdout += d
-    })
+    if (!sink) {
+      child.stdout.on('data', (d) => {
+        stdout += d
+      })
+    }
     child.stderr.on('data', (d) => {
       const s = String(d)
       stderr += s
@@ -76,8 +87,13 @@ export function rclone(
       if (settled) return
       settled = true
       clearTimeout(timer)
-      if (code === 0) resolve({ stdout, stderr })
-      else reject(new Error(`rclone ${args[0]} exited ${code}: ${stderr.trim().slice(0, 500)}`))
+      const done = () => {
+        if (code === 0) resolve({ stdout, stderr })
+        else reject(new Error(`rclone ${args[0]} exited ${code}: ${stderr.trim().slice(0, 500)}`))
+      }
+      // Wait for the file to be flushed before the caller reads it.
+      if (sink) sink.end(done)
+      else done()
     })
   })
 }

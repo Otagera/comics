@@ -14,6 +14,7 @@
  *   cli.ts status       print a summary
  *   cli.ts fetch <id>   fetch one comic by internal id
  *   cli.ts list [query] list the catalogue
+ *   cli.ts covers       extract missing covers from the head of each Drive file
  *   cli.ts notion-propose  show candidate Vault <-> Notion links (writes nothing)
  *   cli.ts notion-link --all  store every proposed link at or above the threshold
  *   cli.ts notion-sync     push Vault state into Notion (one-way)
@@ -24,7 +25,7 @@ import { syncProgress } from './progress.ts'
 import { evict, describeEviction, evictCandidates } from './cache/evict.ts'
 import { fetchComic, cacheSummary, reconcileLocal } from './cache/fetch.ts'
 import { listCatalogue } from './catalogue.ts'
-import { syncCovers } from './covers.ts'
+import { syncCovers, backfillCovers, coverFromDrive } from './covers.ts'
 import { proposeLinks, confirmLinks, syncToNotion } from './notion/sync.ts'
 import { notionConfig } from './notion/client.ts'
 import { humanBytes } from './cache/volume.ts'
@@ -154,6 +155,16 @@ async function main(): Promise<number> {
           `${r.wishesSynced} wish(es), ${r.skipped} skipped`)
       return 0
     }
+    case 'covers': {
+      if (rest[0] && !rest[0].startsWith('--')) {
+        const ok = await coverFromDrive(rest[0])
+        log(`covers: ${ok ? 'extracted' : 'failed'} for ${rest[0]}`)
+        return ok ? 0 : 1
+      }
+      const r = await backfillCovers()
+      log(`covers: ${r.extracted} extracted, ${r.failed} failed, of ${r.attempted} attempted`)
+      return 0
+    }
     case 'reconcile':
       cmdReconcile()
       return 0
@@ -177,7 +188,7 @@ async function main(): Promise<number> {
     default:
       process.stderr.write(
         'usage: cli.ts <index|sync|evict|reconcile|maintenance|status|list|fetch|' +
-        'notion-propose|notion-link|notion-sync>\n',
+        'covers|notion-propose|notion-link|notion-sync>\n',
       )
       return 2
   }

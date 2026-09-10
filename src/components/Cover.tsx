@@ -3,16 +3,17 @@ import { DrawablyCard } from 'drawably/react'
 /**
  * A cover tile, carrying the whole status language.
  *
- *   local     real thumbnail from Komga, full colour, lifted
- *   remote    a hand-drawn card -- literally a sketch of a comic you do not
- *             have yet -- desaturated and stepped back to ~55%
+ *   local     real cover, full colour, lifted
+ *   remote    the same cover, desaturated and stepped back to ~55%; or a
+ *             hand-drawn card when no cover could be extracted at all
  *   fetching  teal "develops" up the tile like a print coming up in a tray
  *   progress  a thin sea-gradient line, only when actually part-read
  *
- * Remote titles genuinely have no cover art: they are filenames in Drive that
- * nothing has ever opened. Drawing them rather than faking a cover is honest,
- * and it makes the sketch-to-photograph transition carry the status on its
- * own -- no badge has to say "not downloaded".
+ * Covers come from Komga for cached titles and, for the rest, from the first
+ * few megabytes of the Drive file itself -- so a remote title shows its own
+ * real cover rather than art guessed from a title match. The sketch remains
+ * for anything no cover could be pulled from; desaturation, not the presence
+ * of art, is what says "not downloaded".
  */
 
 export interface CoverItem {
@@ -59,7 +60,7 @@ export function Cover({ item }: { item: CoverItem }) {
         .filter(Boolean)
         .join(' ')}
     >
-      {isLocal && item.hasCover ? (
+      {item.hasCover ? (
         <img
           src={`/covers/${item.id}.jpg`}
           alt=""
