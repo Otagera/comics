@@ -20,9 +20,9 @@ FROM node:24-alpine
 # extractor pulls a few MB from the head of a Drive file and unpacks the first
 # page from it, so one code path covers .cbr and .cbz alike.
 # Alpine ships ImageMagick without format delegates, so imagemagick alone
-# cannot decode a JPEG -- the -jpeg and -png packages are what make it useful.
-RUN apk add --no-cache rclone tini libarchive-tools \
-      imagemagick imagemagick-jpeg imagemagick-png
+# cannot decode a JPEG -- imagemagick-jpeg is what makes it useful. There is
+# no imagemagick-png package; PNG support is built in.
+RUN apk add --no-cache rclone tini libarchive-tools imagemagick imagemagick-jpeg
 WORKDIR /app
 
 COPY --from=build /app/.output ./.output
