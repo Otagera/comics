@@ -18,7 +18,8 @@
  * read history and simply marks it unavailable. Re-fetching restores it.
  */
 
-import { rmSync, statSync } from 'node:fs'
+import { rmSync } from 'node:fs'
+import { sizeOnDisk } from './fetch.ts'
 import { getDb } from '../db/index.ts'
 import { config } from '../config.ts'
 import { volumeUsage, shortfallFor, humanBytes, type VolumeUsage } from './volume.ts'
@@ -192,12 +193,15 @@ export function evict(
       // reclaimed and let the volume fill while eviction looked healthy.
       let realSize = 0
       try {
-        realSize = statSync(c.local_path).size
+        // A bundle is a directory of unpacked issues, so size is a walk.
+        realSize = sizeOnDisk(c.local_path)
       } catch {
         // Already gone, or local_path is stale. The row is still reconciled
         // below so the catalogue stops claiming the comic is cached.
       }
-      rmSync(c.local_path, { force: true })
+      // recursive: an unpacked bundle is a directory. Each bundle has its own,
+      // so this never reaches another title's issues.
+      rmSync(c.local_path, { force: true, recursive: true })
       db.prepare(
         `UPDATE comic
             SET local_state = 'remote', local_path = NULL, evicted_at = ?,

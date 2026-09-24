@@ -165,4 +165,18 @@ CREATE TABLE setting (
 );
 `,
   },
+  {
+    name: '002_archive_kind',
+    sql: `
+-- What shape the archive actually is, learned by listing its first megabytes.
+--
+--   comic   images at the top level; Komga reads it directly
+--   bundle  other archives inside; Komga makes a book and fails it (ERR_1006)
+--   unknown listed but classified as neither
+--
+-- NULL means not yet inspected. Stored because the catalogue must not offer a
+-- download that cannot be read, and because re-listing costs a Drive call.
+ALTER TABLE comic ADD COLUMN archive_kind TEXT;
+`,
+  },
 ]

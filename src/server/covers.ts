@@ -20,6 +20,7 @@ import { join } from 'node:path'
 import { config } from './config.ts'
 import { getDb } from './db/index.ts'
 import { rclone } from './drive/rclone.ts'
+import { classifyEntries, type ArchiveKind } from './archive.ts'
 
 const exec = promisify(execFile)
 
@@ -193,19 +194,28 @@ export async function coverFromDrive(comicId: string): Promise<boolean> {
         { timeoutMs: 5 * 60_000, outFile: head },
       )
 
-      let entries: string[] = []
+      let all: string[] = []
       try {
         const listing = await execKeepOutput('bsdtar', ['-tf', head], {
           maxBuffer: 8 * 1024 * 1024,
         })
-        entries = listing
-          .toString('utf8')
-          .split('\n')
-          .map((l) => l.trim())
-          .filter((l) => IMAGE_EXT.test(l))
+        all = listing.toString('utf8').split('\n').map((l) => l.trim()).filter(Boolean)
       } catch {
-        entries = []
+        all = []
       }
+
+      // The listing that finds the cover also says what shape the archive is,
+      // so classification costs no extra Drive call.
+      if (all.length) {
+        const kind = classifyEntries(all)
+        getDb().prepare('UPDATE comic SET archive_kind = ? WHERE id = ?').run(kind, comicId)
+        // A bundle has no page to show: its images live one level down, inside
+        // archives far past this window. Komga supplies the cover once it is
+        // fetched and unpacked.
+        if (kind === 'bundle') return false
+      }
+
+      const entries = all.filter((l) => IMAGE_EXT.test(l))
       if (!entries.length) continue
 
       // Archive order is not page order, so take the lowest-numbered page

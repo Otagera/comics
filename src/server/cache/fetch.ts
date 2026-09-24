@@ -15,8 +15,10 @@
  *    folder, because Komga derives series names from directory structure.
  */
 
-import { mkdirSync, renameSync, rmSync, statSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { mkdirSync, renameSync, rmSync, statSync, readdirSync } from 'node:fs'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { dirname, join, basename, extname } from 'node:path'
 import { config } from '../config.ts'
 import { getDb } from '../db/index.ts'
 import { copyFromDrive } from '../drive/rclone.ts'
@@ -24,6 +26,9 @@ import { libraryRelPath, parseFilename } from '../parse/filename.ts'
 import { evict } from './evict.ts'
 import { shortfallFor, humanBytes, volumeUsage } from './volume.ts'
 import { scanLibrary, waitForBook } from '../komga/client.ts'
+import { isReadableByKomga, type ArchiveKind } from '../archive.ts'
+
+const exec = promisify(execFile)
 
 export interface FetchResult {
   comicId: string
@@ -39,6 +44,7 @@ export interface FetchResult {
 
 interface ComicRow {
   id: string
+  archive_kind: ArchiveKind | null
   drive_path: string
   drive_bucket: string | null
   file_name: string
@@ -53,6 +59,60 @@ function loadComic(id: string): ComicRow {
   const row = getDb().prepare('SELECT * FROM comic WHERE id = ?').get(id) as unknown as ComicRow | undefined
   if (!row) throw new Error(`no comic with id ${id}`)
   return row
+}
+
+/**
+ * Where a bundle's contents are unpacked.
+ *
+ * Each bundle gets its own directory, named after the archive. Several bundles
+ * of one run therefore sit side by side under the same series folder rather
+ * than merging, which keeps eviction a single recursive delete: if they shared
+ * a directory, removing one would take the others' issues with it.
+ */
+export function bundleDirFor(row: ComicRow): string {
+  const rel = destinationFor(row)
+  return join(dirname(rel), basename(rel, extname(rel)))
+}
+
+/**
+ * Unpack a bundle into `dir`, flattening one wrapping folder if present.
+ *
+ * Releases normally wrap their issues in a folder named after the archive;
+ * stripping it stops the path picking up the same name twice.
+ */
+async function unpackBundle(archivePath: string, dir: string): Promise<number> {
+  mkdirSync(dir, { recursive: true })
+
+  const { stdout } = (await exec('bsdtar', ['-tf', archivePath], {
+    maxBuffer: 16 * 1024 * 1024,
+  })) as unknown as { stdout: string }
+  const entries = stdout.split('\n').map((l) => l.trim()).filter(Boolean)
+
+  const tops = new Set(entries.map((e) => e.split('/')[0]))
+  const strip = tops.size === 1 && entries.some((e) => e.includes('/')) ? ['--strip-components', '1'] : []
+
+  await exec('bsdtar', ['-xf', archivePath, '-C', dir, ...strip], {
+    maxBuffer: 16 * 1024 * 1024,
+  })
+
+  const out = readdirSync(dir, { withFileTypes: true }).filter((d) => d.isFile())
+  if (!out.length) throw new Error('unpacked nothing')
+  return out.length
+}
+
+/** Total bytes under a path, whether it is one file or a directory. */
+export function sizeOnDisk(path: string): number {
+  const st = statSync(path)
+  if (st.isFile()) return st.size
+  let total = 0
+  for (const d of readdirSync(path, { withFileTypes: true })) {
+    try {
+      total += sizeOnDisk(join(path, d.name))
+    } catch {
+      // vanished mid-walk; ignore
+    }
+  }
+  return total
 }
 
 /** Destination inside the library root, derived from the parsed series. */
@@ -71,6 +131,8 @@ export async function fetchComic(
   const db = getDb()
   const row = loadComic(comicId)
   const startedAt = new Date().toISOString()
+
+  const isBundle = !isReadableByKomga(row.archive_kind)
 
   const relPath = destinationFor(row)
   const destPath = join(config.libraryRoot, relPath)
@@ -98,7 +160,9 @@ export async function fetchComic(
   try {
     let alreadyLocal = false
     try {
-      alreadyLocal = statSync(destPath).size === row.size_bytes
+      alreadyLocal = isBundle
+        ? statSync(join(config.libraryRoot, bundleDirFor(row))).isDirectory()
+        : statSync(destPath).size === row.size_bytes
     } catch {
       alreadyLocal = false
     }
@@ -144,16 +208,43 @@ export async function fetchComic(
       }
     }
 
-    const bytes = statSync(destPath).size
+    // A bundle is unpacked in place: Komga cannot read the wrapper, but it
+    // reads each issue inside it perfectly well.
+    let landedPath = destPath
+    let unpacked = 0
+    if (isBundle) {
+      const dir = join(config.libraryRoot, bundleDirFor(row))
+      unpacked = await unpackBundle(destPath, dir)
+      rmSync(destPath, { force: true }) // the wrapper has served its purpose
+      landedPath = dir
+    }
+
+    const bytes = sizeOnDisk(landedPath)
     const now = new Date().toISOString()
     db.prepare(
       `UPDATE comic SET local_state = 'local', local_path = ?, fetched_at = ?, evicted_at = NULL
        WHERE id = ?`,
-    ).run(destPath, now, comicId)
+    ).run(landedPath, now, comicId)
 
     // Hand it to Komga and confirm, rather than trusting the 202.
     await scanLibrary()
-    const book = await waitForBook(komgaPath)
+    // An unpacked bundle becomes many books under a new directory, so there is
+    // no single url to wait on; the scan is confirmation enough.
+    const book = isBundle ? null : await waitForBook(komgaPath)
+    if (isBundle) {
+      finish('ok', `unpacked ${unpacked} issue(s) into the library`, bytes)
+      return {
+        comicId,
+        fileName: row.file_name,
+        relPath: bundleDirFor(row),
+        bytes,
+        komgaId: null,
+        komgaSeriesId: null,
+        evicted: evictedNames,
+        status: 'fetched',
+        detail: `${humanBytes(bytes)} unpacked as ${unpacked} issue(s)`,
+      }
+    }
 
     if (book) {
       db.prepare('UPDATE comic SET komga_id = ?, komga_series_id = ? WHERE id = ?').run(
@@ -230,10 +321,16 @@ export function reconcileLocal(): { adopted: number; dropped: number } {
   const now = new Date().toISOString()
 
   for (const row of rows) {
-    const destPath = join(config.libraryRoot, destinationFor(row))
+    // A bundle lives on disk as the directory it was unpacked into, not as the
+    // archive that was downloaded -- that is deleted once unpacked.
+    const bundle = !isReadableByKomga(row.archive_kind)
+    const destPath = bundle
+      ? join(config.libraryRoot, bundleDirFor(row))
+      : join(config.libraryRoot, destinationFor(row))
     let onDisk = false
     try {
-      onDisk = statSync(destPath).isFile()
+      const st = statSync(destPath)
+      onDisk = bundle ? st.isDirectory() : st.isFile()
     } catch {
       onDisk = false
     }

@@ -116,3 +116,29 @@ test('volumes roll up into one work, separate editions stay apart', async () => 
   assert.equal(rollUp([lg[0], lg[1]]), 'Not started')
   assert.equal(rollUp([{ ...lg[0], reading_status: 'abandoned' }, lg[1]]), 'Dropped')
 })
+
+test('archive classification tells a comic from a bundle', async () => {
+  const { classifyEntries, isReadableByKomga } = await import('../src/server/archive.ts')
+
+  // Real listings seen in this archive.
+  assert.equal(classifyEntries(['Watchmen - The Deluxe Edition-005.jpg']), 'comic')
+  assert.equal(classifyEntries(['Absolute Batman v01 - The Zoo-0000.jpg']), 'comic')
+  assert.equal(
+    classifyEntries([
+      'Black Panther Vol. 3 001-012 (1998-1999) (Digital)/',
+      'Black Panther Vol. 3 001-012 (1998-1999) (Digital)/Black Panther 001 (1998).cbz',
+    ]),
+    'bundle',
+  )
+
+  // Sidecar files never decide it.
+  assert.equal(classifyEntries(['ComicInfo.xml', 'page001.jpg']), 'comic')
+  assert.equal(classifyEntries(['__MACOSX/', 'x.nfo', 'issue01.cbr']), 'bundle')
+  assert.equal(classifyEntries([]), 'unknown')
+
+  // Only a bundle is refused; an unclassified file still gets to try.
+  assert.equal(isReadableByKomga('comic'), true)
+  assert.equal(isReadableByKomga('unknown'), true)
+  assert.equal(isReadableByKomga(null), true)
+  assert.equal(isReadableByKomga('bundle'), false)
+})
