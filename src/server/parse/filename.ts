@@ -157,6 +157,17 @@ export function parseFilename(
     seriesPart = seriesPart.replace(iss[0], ' ')
   }
 
+  // An issue range -- "001-012", "000-004" -- is how a collected release names
+  // the issues it contains. Without this it lands in the series name, so the
+  // same run arrives as several series that differ only by their range.
+  if (issue === null) {
+    const range = /\b(\d{2,4})\s*-\s*(\d{2,4})\b/.exec(seriesPart)
+    if (range) {
+      issue = `${range[1]}-${range[2]}`
+      seriesPart = seriesPart.slice(0, range.index) + ' ' + seriesPart.slice(range.index + range[0].length)
+    }
+  }
+
   let series = trimEdges(seriesPart)
   let title: string | null = subtitlePart ? trimEdges(subtitlePart) || null : null
 

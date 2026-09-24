@@ -214,3 +214,21 @@ test('a structured wish keeps its fields for later matching', () => {
   assert.equal(w.norm_key, 'saga')
   assert.equal(w.status, 'wanted', 'nothing in Drive matches it yet')
 })
+
+test('bare .zip/.rar/.7z archives count as comics', async () => {
+  // Regression: the port from cxsync narrowed the extension list to the cb*
+  // forms, which hid eight Marvel titles that were sitting in Drive as .zip --
+  // the entire Black Panther Vol. 3 run among them. Komga indexes a bare .zip
+  // exactly like a .cbz, so there is no reason to exclude them.
+  const { config } = await import('../src/server/config.ts')
+  for (const ext of ['.cbz', '.cbr', '.cb7', '.cbt', '.zip', '.rar', '.7z']) {
+    assert.ok(
+      (config.comicExts as readonly string[]).includes(ext),
+      `${ext} must be treated as a comic archive`,
+    )
+  }
+  // Screenshots and loose images must still be excluded.
+  for (const ext of ['.jpg', '.png', '.txt', '.nfo']) {
+    assert.ok(!(config.comicExts as readonly string[]).includes(ext), `${ext} must not be`)
+  }
+})

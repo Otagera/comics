@@ -59,8 +59,16 @@ export const config = {
     importWaitSecs: envNum('CS_IMPORT_WAIT', 180),
   },
 
-  /** Comic archive extensions we consider part of the collection. */
-  comicExts: ['.cbz', '.cbr', '.cb7', '.cbt'] as const,
+  /**
+   * Comic archive extensions we consider part of the collection.
+   *
+   * The bare .zip/.rar/.7z forms matter: releases are routinely distributed
+   * that way rather than renamed to .cbz, and Komga indexes them happily
+   * (verified -- a .zip and an identical .cbz both scan to READY). Leaving
+   * them out made eight Marvel titles, including the whole Black Panther
+   * Vol. 3 run, silently invisible in the catalogue while sitting in Drive.
+   */
+  comicExts: ['.cbz', '.cbr', '.cb7', '.cbt', '.zip', '.rar', '.7z'] as const,
 } as const
 
 export type Config = typeof config
