@@ -198,18 +198,24 @@ export function workKey(c: VaultComic): string {
 }
 
 /** Display name for a work's row. Volumes are dropped; a subtitle is kept. */
+/** A series name that already carries its year, e.g. "The Man of Steel 01-06 (1986)". */
+const ENDS_WITH_YEAR = /\((?:19|20)\d{2}(?:\s*-\s*(?:19|20)?\d{2})?\)\s*$/
+
 export function workName(members: VaultComic[]): string {
   const first = members[0]
   const years = members.map((m) => m.year).filter((y): y is number => y != null)
   const year = years.length ? Math.min(...years) : null
   const series = (first.series ?? '').trim()
+  // Folder-derived series often end in their own year; appending another
+  // produced names like "The Man of Steel 01-06 (1986) (1986)".
+  const needsYear = year != null && !ENDS_WITH_YEAR.test(series)
   if (first.volume != null) {
     // A series row: no volume number, because later volumes join this row.
-    return year ? `${series} (${year})` : series
+    return needsYear ? `${series} (${year})` : series
   }
   const title = (first.title ?? '').trim()
   const base = title ? `${series}: ${title}` : series
-  return year ? `${base} (${year})` : base
+  return needsYear && !ENDS_WITH_YEAR.test(base) ? `${base} (${year})` : base
 }
 
 export interface Work {

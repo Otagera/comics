@@ -80,3 +80,22 @@ test('normaliseKey ignores articles, case and punctuation', () => {
   assert.equal(normaliseKey('Jessica Jones - Alias'), 'jessica jones alias')
   assert.equal(normaliseKey('Batman & Robin'), 'batman and robin')
 })
+
+test('a bare trailing number is an issue, not part of the title', () => {
+  // Real case: DC/The Man of Steel 01-06 (1986)/ holds six issue files. The
+  // number was being kept in the series, so each issue became its own series
+  // and one story would have produced six Notion rows.
+  const F = 'The Man of Steel 01-06 (1986)'
+  const a = parseFilename('The Man of Steel 01 (1986) (two covers) (digital) (Glorith-Novus-HD).cbz', 'DC', F)
+  const b = parseFilename('The Man of Steel 04 (1986) (digital) (Glorith-Novus-HD).cbz', 'DC', F)
+  assert.equal(a.series, F)
+  assert.equal(b.series, F, 'every issue in the folder shares one series')
+  assert.equal(a.issue, '01')
+  assert.equal(b.issue, '04')
+
+  // A title that genuinely ends in a number keeps it when no folder claims it.
+  const t = parseFilename('Top 10 - Beyond the Farthest Precinct (01-05) (2005) (Digital).cbz', 'DC', 'Top 10')
+  assert.equal(t.series, 'Top 10 - Beyond the Farthest Precinct')
+  const bare = parseFilename('Top 10 (2000) (Digital).cbz', 'DC', 'DC')
+  assert.equal(bare.series, 'Top 10', 'no folder to adopt, so the number stays')
+})

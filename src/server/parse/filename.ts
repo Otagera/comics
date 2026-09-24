@@ -187,12 +187,19 @@ export function parseFilename(
     }
   }
 
+  // A bare trailing number is an issue number, not part of the title:
+  // "The Man of Steel 02" is issue 2 of the run its folder names. Stripping it
+  // only for the folder comparison is deliberate -- a title that genuinely
+  // ends in a number ("Top 10") keeps it whenever no folder claims it.
+  const trailing = /\s+(\d{1,4})$/.exec(series)
+  const seriesForCompare = trailing ? series.slice(0, trailing.index) : series
+
   // A parent folder is only a better series name than the filename when it is
   // a *superset* of it -- "Jessica Jones - Alias" over a file called
   // "Alias v01". A folder that merely groups related series must not win:
   // "DC/Absolute Universe" holds Absolute Batman, Superman and Wonder Woman,
   // which are three series, not one.
-  const seriesNorm = normaliseKey(series)
+  const seriesNorm = normaliseKey(seriesForCompare)
   const folderNorm = folder ? normaliseKey(folder) : ''
   const folderIsSeries =
     !!folder &&
@@ -201,7 +208,12 @@ export function parseFilename(
     !PUBLISHERS.some((p) => p.toLowerCase() === folder.toLowerCase()) &&
     folderNorm.includes(seriesNorm)
 
-  if (folderIsSeries && folder) series = tidy(folder)
+  if (folderIsSeries && folder) {
+    series = tidy(folder)
+    // The folder names the run, so the number the filename ended with is this
+    // file's issue within it.
+    if (trailing && issue === null) issue = trailing[1]
+  }
 
   if (!publisher && bucket) {
     const pub = PUBLISHERS.find((p) => p.toLowerCase() === bucket.toLowerCase())
