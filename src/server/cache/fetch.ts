@@ -25,7 +25,7 @@ import { copyFromDrive } from '../drive/rclone.ts'
 import { libraryRelPath, parseFilename } from '../parse/filename.ts'
 import { evict } from './evict.ts'
 import { shortfallFor, humanBytes, volumeUsage } from './volume.ts'
-import { scanLibrary, waitForBook } from '../komga/client.ts'
+import { scanLibrary, waitForBook, listSeries } from '../komga/client.ts'
 import { isReadableByKomga, type ArchiveKind } from '../archive.ts'
 
 const exec = promisify(execFile)
@@ -232,6 +232,18 @@ export async function fetchComic(
     // no single url to wait on; the scan is confirmation enough.
     const book = isBundle ? null : await waitForBook(komgaPath)
     if (isBundle) {
+      // A bundle has no single book to link to, but Komga makes a series from
+      // the directory it was unpacked into. That series is what carries its
+      // read progress.
+      const dirInKomga = `${config.libraryRootInKomga}/${bundleDirFor(row)}`
+      try {
+        const series = (await listSeries()).find((s) => s.url === dirInKomga)
+        if (series) {
+          db.prepare('UPDATE comic SET komga_series_id = ? WHERE id = ?').run(series.id, comicId)
+        }
+      } catch {
+        // Komga still scanning, or unreachable: progress sync links it later.
+      }
       finish('ok', `unpacked ${unpacked} issue(s) into the library`, bytes)
       return {
         comicId,

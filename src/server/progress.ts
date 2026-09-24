@@ -12,7 +12,7 @@
  */
 
 import { getDb } from './db/index.ts'
-import { listBooks } from './komga/client.ts'
+import { listBooks, listSeries } from './komga/client.ts'
 import { config } from './config.ts'
 
 export type ReadingStatus = 'want' | 'reading' | 'finished' | 'abandoned'
@@ -114,6 +114,62 @@ export async function syncProgress(): Promise<ProgressSyncResult> {
   } catch (err) {
     db.exec('ROLLBACK')
     throw err
+  }
+
+  // ---- bundles
+  //
+  // An unpacked bundle is a directory of issues, so no single Komga book
+  // matches its catalogue row. Komga does make a *series* from that directory,
+  // and its per-series counts are exactly the roll-up we need.
+  const bundles = db
+    .prepare(
+      `SELECT id, komga_series_id, local_path FROM comic
+        WHERE archive_kind = 'bundle' AND local_state = 'local'`,
+    )
+    .all() as unknown as Array<{ id: string; komga_series_id: string | null; local_path: string }>
+
+  if (bundles.length) {
+    let series: Awaited<ReturnType<typeof listSeries>> = []
+    try {
+      series = await listSeries()
+    } catch {
+      series = []
+    }
+    const byId = new Map(series.map((s) => [s.id, s]))
+    const byUrl = new Map(series.map((s) => [s.url, s]))
+
+    for (const b of bundles) {
+      let s = b.komga_series_id ? byId.get(b.komga_series_id) : undefined
+      if (!s && b.local_path?.startsWith(config.libraryRoot)) {
+        // Not linked yet: translate the on-disk directory to Komga's view.
+        const url = config.libraryRootInKomga + b.local_path.slice(config.libraryRoot.length)
+        s = byUrl.get(url)
+        if (s) {
+          db.prepare('UPDATE comic SET komga_series_id = ? WHERE id = ?').run(s.id, b.id)
+          linked++
+        }
+      }
+      if (!s) continue
+
+      // Issues read stands in for pages: it is what "how far through" means
+      // for a run, and it drives the same Done / In progress / unread logic.
+      const done = s.booksCount > 0 && s.booksReadCount === s.booksCount
+      const page =
+        s.booksReadCount > 0 ? s.booksReadCount : s.booksInProgressCount > 0 ? 1 : 0
+
+      upsert.run(
+        b.id,
+        // No single book id applies; the series is the unit here.
+        s.id,
+        page,
+        s.booksCount,
+        done ? 1 : 0,
+        null,
+        null,
+        now,
+      )
+      updated++
+    }
   }
 
   db.prepare(
