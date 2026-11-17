@@ -33,6 +33,7 @@ import { canonicalName } from './naming.ts'
 import { proposeLinks, confirmLinks, syncToNotion, rejectLink } from './notion/sync.ts'
 import { notionConfig } from './notion/client.ts'
 import { cachedCoverIds, syncCovers, backfillCovers } from './covers.ts'
+import { traced } from './log.ts'
 
 // ---------------------------------------------------------------- catalogue
 
@@ -67,10 +68,14 @@ export const getVault = createServerFn({ method: 'GET' })
     }
   })
 
-export const runCoverSync = createServerFn({ method: 'POST' }).handler(() => syncCovers())
+export const runCoverSync = createServerFn({ method: 'POST' }).handler(() =>
+  traced('COVER-SYNC', {}, () => syncCovers()),
+)
 
 /** Extract covers from the head of each Drive file for anything still blank. */
-export const runCoverBackfill = createServerFn({ method: 'POST' }).handler(() => backfillCovers())
+export const runCoverBackfill = createServerFn({ method: 'POST' }).handler(() =>
+  traced('COVER-BACKFILL', {}, () => backfillCovers()),
+)
 
 export const getSeriesGroups = createServerFn({ method: 'GET' })
   .validator((f: CatalogueFilter | undefined) => f ?? {})
@@ -91,21 +96,23 @@ export const getOverview = createServerFn({ method: 'GET' }).handler(async () =>
 // ---------------------------------------------------------------- drive index
 
 export const runIndexRefresh = createServerFn({ method: 'POST' }).handler(() =>
-  refreshIndex('manual'),
+  traced('INDEX-REFRESH', { trigger: 'manual' }, () => refreshIndex('manual')),
 )
 
 // ---------------------------------------------------------------- cache
 
 export const fetchTitle = createServerFn({ method: 'POST' })
   .validator((id: string) => id)
-  .handler(({ data }) => fetchComic(data))
+  .handler(({ data }) => traced('FETCH', { comicId: data }, () => fetchComic(data)))
 
 export const previewEviction = createServerFn({ method: 'GET' }).handler(() => ({
   candidates: evictCandidates(),
   plan: evict({ dryRun: true }),
 }))
 
-export const runEviction = createServerFn({ method: 'POST' }).handler(() => evict())
+export const runEviction = createServerFn({ method: 'POST' }).handler(() =>
+  traced('EVICT', { trigger: 'manual' }, () => evict()),
+)
 
 export const setPin = createServerFn({ method: 'POST' })
   .validator((d: { id: string; pinned: boolean }) => d)
@@ -124,7 +131,9 @@ export const setStatus = createServerFn({ method: 'POST' })
     return { ok: true }
   })
 
-export const runProgressSync = createServerFn({ method: 'POST' }).handler(() => syncProgress())
+export const runProgressSync = createServerFn({ method: 'POST' }).handler(() =>
+  traced('PROGRESS-SYNC', {}, () => syncProgress()),
+)
 
 // ---------------------------------------------------------------- wishlist
 
@@ -178,7 +187,7 @@ export const getNotionLinkProposals = createServerFn({ method: 'GET' }).handler(
 
 export const applyNotionLinks = createServerFn({ method: 'POST' })
   .validator((pairs: Array<{ comicId: string; notionPageId: string }>) => pairs)
-  .handler(({ data }) => confirmLinks(data))
+  .handler(({ data }) => traced('NOTION-LINK', { pairs: data.length }, () => confirmLinks(data)))
 
 export const rejectNotionLink = createServerFn({ method: 'POST' })
   .validator((d: { comicId: string; notionPageId: string }) => d)
@@ -187,4 +196,6 @@ export const rejectNotionLink = createServerFn({ method: 'POST' })
     return { ok: true }
   })
 
-export const runNotionSync = createServerFn({ method: 'POST' }).handler(() => syncToNotion())
+export const runNotionSync = createServerFn({ method: 'POST' }).handler(() =>
+  traced('NOTION-SYNC', {}, () => syncToNotion()),
+)

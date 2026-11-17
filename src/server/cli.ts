@@ -30,9 +30,17 @@ import { proposeLinks, confirmLinks, syncToNotion } from './notion/sync.ts'
 import { notionConfig } from './notion/client.ts'
 import { humanBytes } from './cache/volume.ts'
 import { closeDb } from './db/index.ts'
+import { log as record, flushLogs, type Level } from './log.ts'
 
-function log(msg: string): void {
-  process.stdout.write(`${new Date().toISOString()} ${msg}\n`)
+const CMD = process.argv[2] ?? ''
+
+// Read-only commands print but do not ship to Chatterbox: they are run by
+// hand, and shipping them would bury the cron runs that the logs are for.
+const SHIP = !['', 'status', 'list', 'notion-propose'].includes(CMD)
+
+function log(msg: string, level: Level = 'info'): void {
+  if (SHIP) record(level, `CLI-${CMD.toUpperCase()}`, msg)
+  else process.stdout.write(`${new Date().toISOString()} ${msg}\n`)
 }
 
 function cmdReconcile(): void {
@@ -57,13 +65,13 @@ async function cmdSync(): Promise<void> {
     log(`progress: ${r.booksSeen} book(s) from Komga, ${r.updated} updated, ${r.linked} newly linked`)
   } catch (err) {
     // Komga being down must not abort the rest of maintenance.
-    log(`progress: skipped (${(err as Error).message})`)
+    log(`progress: skipped (${(err as Error).message})`, 'warn')
   }
   try {
     const c = await syncCovers()
     if (c.fetched || c.failed) log(`covers: ${c.fetched} cached, ${c.failed} failed`)
   } catch (err) {
-    log(`covers: skipped (${(err as Error).message})`)
+    log(`covers: skipped (${(err as Error).message})`, 'warn')
   }
 }
 
@@ -158,7 +166,7 @@ async function main(): Promise<number> {
     case 'covers': {
       if (rest[0] && !rest[0].startsWith('--')) {
         const ok = await coverFromDrive(rest[0])
-        log(`covers: ${ok ? 'extracted' : 'failed'} for ${rest[0]}`)
+        log(`covers: ${ok ? 'extracted' : 'failed'} for ${rest[0]}`, ok ? 'info' : 'warn')
         return ok ? 0 : 1
       }
       const r = await backfillCovers(500, rest.includes('--force'))
@@ -194,13 +202,18 @@ async function main(): Promise<number> {
   }
 }
 
+// process.exit() abandons in-flight requests, so wait for the last batch of
+// logs before exiting. flushLogs() never rejects and gives up after 10s.
 main()
-  .then((code) => {
+  .then(async (code) => {
     closeDb()
+    await flushLogs()
     process.exit(code)
   })
-  .catch((err) => {
+  .catch(async (err) => {
+    if (SHIP) record('error', `CLI-${CMD.toUpperCase()}-FAILED`, `error: ${err?.message ?? err}`, { error: err, echo: false })
     process.stderr.write(`error: ${err?.stack ?? err}\n`)
     closeDb()
+    await flushLogs()
     process.exit(1)
   })

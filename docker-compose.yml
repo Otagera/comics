@@ -93,6 +93,10 @@ services:
       # One-way Vault -> Notion sync. Unset means the sync is simply off.
       - NOTION_TOKEN=${NOTION_TOKEN}
       - NOTION_DATABASE_ID=${NOTION_DATABASE_ID}
+      # Ship logs to Chatterbox. Unset app or secret means stdout only.
+      - CS_CHATTERBOX_URL=${CHATTERBOX_URL:-https://chatterbox.otagera.xyz}
+      - CS_CHATTERBOX_APP=${CHATTERBOX_APP}
+      - CS_CHATTERBOX_SECRET=${CHATTERBOX_SECRET}
     volumes:
       - /mnt/HC_Volume_106816620:/vault
       - /root/.config/rclone/rclone.conf:/config/rclone.conf:ro
