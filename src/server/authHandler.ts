@@ -22,6 +22,16 @@ import { timingSafeEqual } from 'node:crypto'
 
 const REALM = 'Vault'
 
+// The icons are public: browsers fetch the favicon without credentials, and
+// iOS fetches the home-screen icon with none, so behind auth they would
+// silently fall back to a blank tile. They reveal nothing about the library.
+const OPEN_PATHS = new Set([
+  '/favicon.ico',
+  '/favicon.svg',
+  '/favicon-32.png',
+  '/apple-touch-icon.png',
+])
+
 function challenge(): Response {
   return new Response('Authentication required', {
     status: 401,
@@ -50,6 +60,7 @@ export default defineEventHandler((event) => {
   const user = process.env.CS_AUTH_USER
   const password = process.env.CS_AUTH_PASSWORD
   if (!user || !password) return // env-gated: not configured, not enforced
+  if (OPEN_PATHS.has(new URL(event.req.url).pathname)) return
 
   const header = event.req.headers.get('authorization') ?? ''
   if (!header.toLowerCase().startsWith('basic ')) return challenge()

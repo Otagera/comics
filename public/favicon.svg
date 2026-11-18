@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Vault: a comic page on the Sunset-vault teal, Couch's sibling. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f8d84"/>
+      <stop offset="1" stop-color="#46c2b0"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="15" fill="url(#bg)"/>
+  <!-- Panels. Stroked in their own fill with round joins, which rounds the
+       corners of the slanted ones too. -->
+  <g stroke-linejoin="round" stroke-width="4">
+    <!-- top panel -->
+    <path d="M14 14 H50 V28 H14 Z" fill="#ffffff" stroke="#ffffff"/>
+    <!-- bottom panels, split by a diagonal gutter -->
+    <path d="M14 36 H31 L27 50 H14 Z" fill="#ffffff" stroke="#ffffff"/>
+    <path d="M38 36 H50 V50 H34 Z" fill="#dff3f0" stroke="#dff3f0"/>
+  </g>
+  <!-- speech bubble in the top panel -->
+  <ellipse cx="27" cy="20.5" rx="8.5" ry="5" fill="#12968d"/>
+  <path d="M22 23.5 L19 29 L26.5 25 Z" fill="#12968d"/>
+</svg>
